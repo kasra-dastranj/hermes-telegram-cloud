@@ -1,0 +1,11 @@
+.hf-venv/
+.env
+__pycache__/
+*.pyc
+*.log
+
+# Local Windows launchers are not part of the cloud deployment.
+Start-Hermes-Bale.cmd
+Start-Hermes-Bale.ps1
+Set-Hermes-Proxy.cmd
+Set-Hermes-Proxy.ps1

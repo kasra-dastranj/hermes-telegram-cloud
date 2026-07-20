@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: hermes-telegram
+    runtime: docker
+    plan: free
+    autoDeployTrigger: commit
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_ALLOWED_USERS
+        sync: false
