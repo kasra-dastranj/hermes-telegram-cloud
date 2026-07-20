@@ -12,10 +12,11 @@ RUN mkdir -p /opt/9router-seed \
     && npm cache clean --force
 
 COPY --chmod=0755 start.sh /app/start.sh
+COPY front_proxy.py /app/front_proxy.py
 
 ENV HERMES_HOME=/opt/data \
     DATA_DIR=/opt/data/9router \
-    TELEGRAM_WEBHOOK_PORT=7860 \
+    TELEGRAM_WEBHOOK_PORT=8443 \
     PYTHONUNBUFFERED=1
 
 EXPOSE 7860

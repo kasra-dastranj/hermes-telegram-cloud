@@ -15,7 +15,8 @@ require_env TELEGRAM_ALLOWED_USERS
 
 export HERMES_HOME="${HERMES_HOME:-/opt/data}"
 export DATA_DIR="${DATA_DIR:-/opt/data/9router}"
-export TELEGRAM_WEBHOOK_PORT="${PORT:-${TELEGRAM_WEBHOOK_PORT:-7860}}"
+export PUBLIC_PORT="${PORT:-7860}"
+export TELEGRAM_WEBHOOK_PORT="${TELEGRAM_WEBHOOK_PORT:-8443}"
 
 if [ -z "${TELEGRAM_WEBHOOK_URL:-}" ]; then
     if [ -n "${SPACE_HOST:-}" ]; then
@@ -72,11 +73,16 @@ YAML
 
 mkdir -p "$HERMES_HOME/workspace"
 
+echo "[startup] Opening public port ${PUBLIC_PORT} immediately..."
+python3 /app/front_proxy.py &
+proxy_pid=$!
+
 echo "[startup] Starting 9Router on internal port 20128..."
 9router --host 127.0.0.1 --port 20128 --no-browser --skip-update --log &
 router_pid=$!
 
 cleanup() {
+    kill "$proxy_pid" 2>/dev/null || true
     kill "$router_pid" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
