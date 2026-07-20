@@ -92,11 +92,22 @@ until curl -fsS http://127.0.0.1:20128/api/health >/dev/null 2>&1; do
 done
 
 echo "[startup] Registering the OpenCode free model..."
-curl -fsS \
+model_response="$(curl -sS \
     -X POST \
     -H 'Content-Type: application/json' \
     --data '{"providerAlias":"oc","id":"deepseek-v4-flash-free","type":"llm","name":"deepseek-v4-flash-free"}' \
-    http://127.0.0.1:20128/api/models/custom >/dev/null
+    -w '\n%{http_code}' \
+    http://127.0.0.1:20128/api/models/custom || true)"
+model_status="$(printf '%s\n' "$model_response" | tail -n 1)"
+
+case "$model_status" in
+    2??)
+        echo "[startup] OpenCode free model is ready."
+        ;;
+    *)
+        echo "[startup] Warning: model registration returned HTTP ${model_status:-unknown}; continuing because OpenCode Free is built in."
+        ;;
+esac
 
 echo "[startup] Starting Hermes Telegram webhook at ${TELEGRAM_WEBHOOK_URL}"
 exec hermes gateway run
