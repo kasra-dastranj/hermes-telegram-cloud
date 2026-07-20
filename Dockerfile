@@ -13,6 +13,7 @@ RUN mkdir -p /opt/9router-seed \
 
 COPY --chmod=0755 start.sh /app/start.sh
 COPY front_proxy.py /app/front_proxy.py
+COPY configure_9router.js /app/configure_9router.js
 
 ENV HERMES_HOME=/opt/data \
     DATA_DIR=/opt/data/9router \

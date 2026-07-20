@@ -36,6 +36,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json(404, {"ok": False, "error": "not_found"})
 
+    def do_HEAD(self) -> None:  # noqa: N802
+        if self.path in ("/", "/health"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_POST(self) -> None:  # noqa: N802
         if self.path.split("?", 1)[0] != "/telegram":
             self._send_json(404, {"ok": False, "error": "not_found"})

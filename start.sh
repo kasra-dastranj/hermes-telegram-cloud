@@ -99,23 +99,9 @@ until curl -fsS http://127.0.0.1:20128/api/health >/dev/null 2>&1; do
     sleep 2
 done
 
-echo "[startup] Registering the OpenCode free model..."
-model_response="$(curl -sS \
-    -X POST \
-    -H 'Content-Type: application/json' \
-    --data '{"providerAlias":"oc","id":"deepseek-v4-flash-free","type":"llm","name":"deepseek-v4-flash-free"}' \
-    -w '\n%{http_code}' \
-    http://127.0.0.1:20128/api/models/custom || true)"
-model_status="$(printf '%s\n' "$model_response" | tail -n 1)"
-
-case "$model_status" in
-    2??)
-        echo "[startup] OpenCode free model is ready."
-        ;;
-    *)
-        echo "[startup] Warning: model registration returned HTTP ${model_status:-unknown}; continuing because OpenCode Free is built in."
-        ;;
-esac
+echo "[startup] Configuring 9Router's private local database..."
+node /app/configure_9router.js
+echo "[startup] OpenCode free model is ready and the internal API accepts Hermes."
 
 echo "[startup] Starting Hermes Telegram webhook at ${TELEGRAM_WEBHOOK_URL}"
 telegram_probe_status="$(python3 - <<'PY'
