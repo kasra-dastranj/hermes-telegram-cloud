@@ -17,6 +17,8 @@ export HERMES_HOME="${HERMES_HOME:-/opt/data}"
 export DATA_DIR="${DATA_DIR:-/opt/data/9router}"
 export PUBLIC_PORT="${PORT:-7860}"
 export TELEGRAM_WEBHOOK_PORT="${TELEGRAM_WEBHOOK_PORT:-8443}"
+export HERMES_TELEGRAM_DISABLE_FALLBACK_IPS="${HERMES_TELEGRAM_DISABLE_FALLBACK_IPS:-true}"
+export HERMES_TELEGRAM_INIT_TIMEOUT="${HERMES_TELEGRAM_INIT_TIMEOUT:-15}"
 
 if [ -z "${TELEGRAM_WEBHOOK_URL:-}" ]; then
     if [ -n "${SPACE_HOST:-}" ]; then
@@ -116,4 +118,20 @@ case "$model_status" in
 esac
 
 echo "[startup] Starting Hermes Telegram webhook at ${TELEGRAM_WEBHOOK_URL}"
+telegram_probe_status="$(python3 - <<'PY'
+import os
+import urllib.error
+import urllib.request
+
+url = "https://api.telegram.org/bot" + os.environ["TELEGRAM_BOT_TOKEN"] + "/getMe"
+try:
+    with urllib.request.urlopen(url, timeout=20) as response:
+        print(response.status)
+except urllib.error.HTTPError as exc:
+    print(exc.code)
+except Exception:
+    print("000")
+PY
+)"
+echo "[startup] Direct Telegram API probe returned HTTP ${telegram_probe_status:-000}."
 exec hermes gateway run
