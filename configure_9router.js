@@ -1,13 +1,12 @@
 "use strict";
 
 const path = require("path");
+const { DatabaseSync } = require("node:sqlite");
 
 const dataDir = process.env.DATA_DIR || "/opt/data/9router";
-const Database = require(
-  path.join(dataDir, "runtime", "node_modules", "better-sqlite3")
-);
 const databasePath = path.join(dataDir, "db", "data.sqlite");
-const db = new Database(databasePath);
+const db = new DatabaseSync(databasePath);
+db.exec("PRAGMA busy_timeout = 5000");
 
 const settings = JSON.stringify({ requireApiKey: false });
 db.prepare(
