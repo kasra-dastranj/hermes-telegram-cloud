@@ -18,10 +18,15 @@ COPY configure_9router.js /app/configure_9router.js
 ENV HERMES_HOME=/opt/data \
     DATA_DIR=/opt/data/9router \
     TELEGRAM_WEBHOOK_PORT=8443 \
+    HERMES_GATEWAY_NO_SUPERVISE=1 \
+    HOME=/opt/data \
     PYTHONUNBUFFERED=1
 
 EXPOSE 7860
 
-# Keep the Hermes image's s6 entrypoint. It prepares /opt/data and then runs
-# this executable as the unprivileged hermes user.
-CMD ["/app/start.sh"]
+# Render only needs one foreground process. Bypass the base image's s6
+# lifecycle so Render's port probe cannot lose the public proxy while s6
+# transitions between its static services. Hermes runs in foreground mode;
+# the shell keeps 9Router and the public proxy as sibling child processes.
+ENTRYPOINT ["/app/start.sh"]
+CMD []

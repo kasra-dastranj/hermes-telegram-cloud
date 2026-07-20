@@ -5,7 +5,7 @@ require_env() {
     name="$1"
     eval "value=\${$name:-}"
     if [ -z "$value" ]; then
-        echo "[startup] Missing required Hugging Face Space secret: $name" >&2
+        echo "[startup] Missing required deployment secret: $name" >&2
         exit 1
     fi
 }
