@@ -35,7 +35,10 @@ rate-limited, out of quota, overloaded, or otherwise unavailable.
 
 Incoming Telegram voice messages are transcribed with Groq's
 `whisper-large-v3-turbo` model when the `GROQ_API_KEY` deployment secret is
-set. Hermes echoes the transcript into the chat before answering it.
+set. Persian (`fa`) is forced by default to prevent short voice notes from
+being auto-detected or rendered in English. Override `STT_GROQ_LANGUAGE` only
+if a different spoken language is needed. Hermes echoes the transcript into
+the chat before answering it.
 
 Incoming Telegram images are analyzed by OpenRouter's `openrouter/free`
 router when the `OPENROUTER_API_KEY` deployment secret is set. Hermes keeps
