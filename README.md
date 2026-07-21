@@ -25,10 +25,18 @@ The default `hermes-free` combo tries these models in order:
 4. `oc/nemotron-3-ultra-free`
 5. `oc/north-mini-code-free`
 
+9Router automatically falls back to the next model when the current one is
+rate-limited, out of quota, overloaded, or otherwise unavailable.
+
+Incoming Telegram voice messages are transcribed with Groq's
+`whisper-large-v3-turbo` model when the `GROQ_API_KEY` deployment secret is
+set. Hermes echoes the transcript into the chat before answering it.
+
 Required Space secrets:
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_ALLOWED_USERS`
+- `GROQ_API_KEY` (required for Telegram voice transcription)
 
 The Telegram webhook URL and webhook secret are derived automatically at
 runtime on Render or Hugging Face Spaces. No credentials are stored in this

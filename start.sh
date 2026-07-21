@@ -19,6 +19,7 @@ export PUBLIC_PORT="${PORT:-7860}"
 export TELEGRAM_WEBHOOK_PORT="${TELEGRAM_WEBHOOK_PORT:-8443}"
 export HERMES_TELEGRAM_DISABLE_FALLBACK_IPS="${HERMES_TELEGRAM_DISABLE_FALLBACK_IPS:-true}"
 export HERMES_TELEGRAM_INIT_TIMEOUT="${HERMES_TELEGRAM_INIT_TIMEOUT:-15}"
+export STT_GROQ_MODEL="${STT_GROQ_MODEL:-whisper-large-v3-turbo}"
 
 if [ -z "${TELEGRAM_WEBHOOK_URL:-}" ]; then
     if [ -n "${SPACE_HOST:-}" ]; then
@@ -66,7 +67,9 @@ display:
   compact: false
   streaming: true
 stt:
-  enabled: false
+  enabled: true
+  echo_transcripts: true
+  provider: groq
 platforms:
   telegram:
     extra:
