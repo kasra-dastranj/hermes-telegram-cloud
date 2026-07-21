@@ -17,13 +17,18 @@ This Docker Space runs:
 - 9Router on an internal-only port
 - An automatic 9Router fallback chain of OpenCode Free models
 
-The default `hermes-free` combo tries these models in order:
+The default `hermes-free` combo tries these models in order. Provider
+connections are recreated from deployment secrets on every cold start:
 
 1. `oc/deepseek-v4-flash-free`
 2. `oc/mimo-v2.5-free`
 3. `oc/big-pickle`
 4. `oc/nemotron-3-ultra-free`
 5. `oc/north-mini-code-free`
+6. `groq/openai/gpt-oss-120b` (when `GROQ_API_KEY` is set)
+7. `groq/llama-3.3-70b-versatile` (when `GROQ_API_KEY` is set)
+8. `groq/qwen/qwen3.6-27b` (when `GROQ_API_KEY` is set)
+9. `openrouter/openrouter/free` (when `OPENROUTER_API_KEY` is set)
 
 9Router automatically falls back to the next model when the current one is
 rate-limited, out of quota, overloaded, or otherwise unavailable.

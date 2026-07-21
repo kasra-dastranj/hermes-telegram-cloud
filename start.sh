@@ -145,7 +145,7 @@ case "$auth_probe_status" in
         ;;
 esac
 echo "[startup] 9Router internal API authentication check passed."
-echo "[startup] OpenCode free fallback combo is ready and the internal API accepts Hermes."
+echo "[startup] Multi-provider free fallback combo is ready and the internal API accepts Hermes."
 
 if ! kill -0 "$proxy_pid" 2>/dev/null; then
     echo "[startup] Public webhook proxy exited unexpectedly." >&2
