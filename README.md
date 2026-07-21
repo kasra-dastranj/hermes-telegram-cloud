@@ -32,11 +32,17 @@ Incoming Telegram voice messages are transcribed with Groq's
 `whisper-large-v3-turbo` model when the `GROQ_API_KEY` deployment secret is
 set. Hermes echoes the transcript into the chat before answering it.
 
+Incoming Telegram images are analyzed by OpenRouter's `openrouter/free`
+router when the `OPENROUTER_API_KEY` deployment secret is set. Hermes keeps
+the text-only 9Router combo as the main agent and injects the vision model's
+image description into the conversation.
+
 Required Space secrets:
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_ALLOWED_USERS`
 - `GROQ_API_KEY` (required for Telegram voice transcription)
+- `OPENROUTER_API_KEY` (required for Telegram image analysis)
 
 The Telegram webhook URL and webhook secret are derived automatically at
 runtime on Render or Hugging Face Spaces. No credentials are stored in this

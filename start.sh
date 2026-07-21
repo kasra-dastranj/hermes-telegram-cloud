@@ -60,6 +60,7 @@ agent:
   max_turns: 60
   verbose: false
   reasoning_effort: medium
+  image_input_mode: text
 terminal:
   backend: local
   cwd: /opt/data/workspace
@@ -70,6 +71,11 @@ stt:
   enabled: true
   echo_transcripts: true
   provider: groq
+auxiliary:
+  vision:
+    provider: openrouter
+    model: openrouter/free
+    timeout: 120
 platforms:
   telegram:
     extra:
