@@ -1,10 +1,14 @@
 "use strict";
 
+const fs = require("fs");
 const path = require("path");
 const { DatabaseSync } = require("node:sqlite");
 
 const dataDir = process.env.DATA_DIR || "/opt/data/9router";
 const databasePath = path.join(dataDir, "db", "data.sqlite");
+if (!fs.existsSync(databasePath)) {
+  throw new Error(`9Router did not create its database at ${databasePath}`);
+}
 const db = new DatabaseSync(databasePath);
 db.exec("PRAGMA busy_timeout = 5000");
 

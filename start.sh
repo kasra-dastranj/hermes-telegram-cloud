@@ -99,6 +99,17 @@ until curl -fsS http://127.0.0.1:20128/api/health >/dev/null 2>&1; do
     sleep 2
 done
 
+echo "[startup] Initializing 9Router's database..."
+attempt=0
+until curl -fsS http://127.0.0.1:20128/api/settings >/dev/null 2>&1; do
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge 30 ]; then
+        echo "[startup] 9Router database initialization did not complete in time." >&2
+        exit 1
+    fi
+    sleep 1
+done
+
 echo "[startup] Configuring 9Router's private local database..."
 node /app/configure_9router.js
 echo "[startup] OpenCode free model is ready and the internal API accepts Hermes."
