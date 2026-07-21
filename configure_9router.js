@@ -12,24 +12,49 @@ if (!fs.existsSync(databasePath)) {
 const db = new DatabaseSync(databasePath);
 db.exec("PRAGMA busy_timeout = 5000");
 
-const settings = JSON.stringify({ requireApiKey: false });
-db.prepare(
-  `INSERT INTO settings (id, data) VALUES (1, ?)
-   ON CONFLICT(id) DO UPDATE SET data = excluded.data`
-).run(settings);
+try {
+  db.exec("BEGIN IMMEDIATE");
 
-const modelKey = "oc|deepseek-v4-flash-free|llm";
-const modelValue = JSON.stringify({
-  providerAlias: "oc",
-  id: "deepseek-v4-flash-free",
-  type: "llm",
-  name: "deepseek-v4-flash-free",
-});
+  const currentRow = db
+    .prepare("SELECT data FROM settings WHERE id = 1")
+    .get();
+  let currentSettings = {};
+  if (currentRow?.data) {
+    try {
+      currentSettings = JSON.parse(currentRow.data);
+    } catch {
+      currentSettings = {};
+    }
+  }
+  currentSettings.requireApiKey = false;
 
-db.prepare(
-  `INSERT INTO kv (scope, key, value) VALUES ('customModels', ?, ?)
-   ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`
-).run(modelKey, modelValue);
+  db.prepare(
+    `INSERT INTO settings (id, data) VALUES (1, ?)
+     ON CONFLICT(id) DO UPDATE SET data = excluded.data`
+  ).run(JSON.stringify(currentSettings));
 
-db.close();
+  const modelKey = "oc|deepseek-v4-flash-free|llm";
+  const modelValue = JSON.stringify({
+    providerAlias: "oc",
+    id: "deepseek-v4-flash-free",
+    type: "llm",
+    name: "deepseek-v4-flash-free",
+  });
+
+  db.prepare(
+    `INSERT INTO kv (scope, key, value) VALUES ('customModels', ?, ?)
+     ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`
+  ).run(modelKey, modelValue);
+
+  db.exec("COMMIT");
+} catch (error) {
+  try {
+    db.exec("ROLLBACK");
+  } catch {
+    // The transaction may not have started; preserve the original error.
+  }
+  throw error;
+} finally {
+  db.close();
+}
 console.log("[startup] 9Router database configured without exposing its port.");

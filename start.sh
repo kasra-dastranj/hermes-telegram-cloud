@@ -100,11 +100,15 @@ until curl -fsS http://127.0.0.1:20128/api/health >/dev/null 2>&1; do
 done
 
 echo "[startup] Initializing 9Router's database..."
+# The first settings request runs 9Router's lazy database migrations. Some
+# 9Router builds return a non-2xx response on that very first request even
+# though the migration completed, so readiness is the database file itself.
+curl -sS http://127.0.0.1:20128/api/settings >/dev/null 2>&1 || true
 attempt=0
-until curl -fsS http://127.0.0.1:20128/api/settings >/dev/null 2>&1; do
+until [ -s "$DATA_DIR/db/data.sqlite" ]; do
     attempt=$((attempt + 1))
-    if [ "$attempt" -ge 30 ]; then
-        echo "[startup] 9Router database initialization did not complete in time." >&2
+    if [ "$attempt" -ge 20 ]; then
+        echo "[startup] 9Router did not create $DATA_DIR/db/data.sqlite in time." >&2
         exit 1
     fi
     sleep 1
@@ -112,7 +116,32 @@ done
 
 echo "[startup] Configuring 9Router's private local database..."
 node /app/configure_9router.js
+
+# Verify the data-plane API no longer requires a key. Depending on 9Router's
+# model parser, the invalid probe reaches validation as HTTP 400 or 404; HTTP
+# 401 is the failure we are guarding against.
+auth_probe_status="$(curl -sS -o /tmp/9router-auth-probe.json -w '%{http_code}' \
+    -X POST http://127.0.0.1:20128/v1/chat/completions \
+    -H 'Content-Type: application/json' \
+    --data '{"model":"__startup_auth_probe__","messages":[{"role":"user","content":"ping"}]}' \
+    || printf '000')"
+case "$auth_probe_status" in
+    400|404) ;;
+    *)
+        echo "[startup] 9Router auth probe failed with HTTP $auth_probe_status." >&2
+        if [ -f /tmp/9router-auth-probe.json ]; then
+            sed -n '1,5p' /tmp/9router-auth-probe.json >&2
+        fi
+        exit 1
+        ;;
+esac
+echo "[startup] 9Router internal API authentication check passed."
 echo "[startup] OpenCode free model is ready and the internal API accepts Hermes."
+
+if ! kill -0 "$proxy_pid" 2>/dev/null; then
+    echo "[startup] Public webhook proxy exited unexpectedly." >&2
+    exit 1
+fi
 
 echo "[startup] Starting Hermes Telegram webhook at ${TELEGRAM_WEBHOOK_URL}"
 telegram_probe_status="$(python3 - <<'PY'
@@ -131,4 +160,8 @@ except Exception:
 PY
 )"
 echo "[startup] Direct Telegram API probe returned HTTP ${telegram_probe_status:-000}."
+if [ "$telegram_probe_status" != "200" ]; then
+    echo "[startup] Telegram token or outbound connectivity check failed." >&2
+    exit 1
+fi
 exec hermes gateway run
