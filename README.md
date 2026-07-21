@@ -15,7 +15,15 @@ This Docker Space runs:
 
 - Hermes Agent as a Telegram webhook bot
 - 9Router on an internal-only port
-- `oc/deepseek-v4-flash-free` through 9Router
+- An automatic 9Router fallback chain of OpenCode Free models
+
+The default `hermes-free` combo tries these models in order:
+
+1. `oc/deepseek-v4-flash-free`
+2. `oc/mimo-v2.5-free`
+3. `oc/big-pickle`
+4. `oc/nemotron-3-ultra-free`
+5. `oc/north-mini-code-free`
 
 Required Space secrets:
 

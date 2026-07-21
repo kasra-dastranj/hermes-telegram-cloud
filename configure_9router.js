@@ -12,6 +12,16 @@ if (!fs.existsSync(databasePath)) {
 const db = new DatabaseSync(databasePath);
 db.exec("PRAGMA busy_timeout = 5000");
 
+const freeModels = [
+  "deepseek-v4-flash-free",
+  "mimo-v2.5-free",
+  "big-pickle",
+  "nemotron-3-ultra-free",
+  "north-mini-code-free",
+];
+const comboId = "hermes-free-fallback";
+const comboName = "hermes-free";
+
 try {
   db.exec("BEGIN IMMEDIATE");
 
@@ -33,18 +43,38 @@ try {
      ON CONFLICT(id) DO UPDATE SET data = excluded.data`
   ).run(JSON.stringify(currentSettings));
 
-  const modelKey = "oc|deepseek-v4-flash-free|llm";
-  const modelValue = JSON.stringify({
-    providerAlias: "oc",
-    id: "deepseek-v4-flash-free",
-    type: "llm",
-    name: "deepseek-v4-flash-free",
-  });
-
-  db.prepare(
+  const upsertModel = db.prepare(
     `INSERT INTO kv (scope, key, value) VALUES ('customModels', ?, ?)
      ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`
-  ).run(modelKey, modelValue);
+  );
+  for (const model of freeModels) {
+    upsertModel.run(
+      `oc|${model}|llm`,
+      JSON.stringify({
+        providerAlias: "oc",
+        id: model,
+        type: "llm",
+        name: model,
+      })
+    );
+  }
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO combos (id, name, kind, models, createdAt, updatedAt)
+     VALUES (?, ?, NULL, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name,
+       kind = excluded.kind,
+       models = excluded.models,
+       updatedAt = excluded.updatedAt`
+  ).run(
+    comboId,
+    comboName,
+    JSON.stringify(freeModels.map((model) => `oc/${model}`)),
+    now,
+    now
+  );
 
   db.exec("COMMIT");
 } catch (error) {
@@ -57,4 +87,7 @@ try {
 } finally {
   db.close();
 }
-console.log("[startup] 9Router database configured without exposing its port.");
+console.log(
+  `[startup] 9Router configured with ${freeModels.length} OpenCode free models ` +
+    `and fallback combo "${comboName}" without exposing its port.`
+);

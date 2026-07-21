@@ -50,7 +50,7 @@ fi
 # Telegram credentials remain environment variables managed by Space Secrets.
 cat > "$HERMES_HOME/config.yaml" <<'YAML'
 model:
-  default: oc/deepseek-v4-flash-free
+  default: hermes-free
   provider: custom
   base_url: http://127.0.0.1:20128/v1
   api_key: local-no-key-required
@@ -136,7 +136,7 @@ case "$auth_probe_status" in
         ;;
 esac
 echo "[startup] 9Router internal API authentication check passed."
-echo "[startup] OpenCode free model is ready and the internal API accepts Hermes."
+echo "[startup] OpenCode free fallback combo is ready and the internal API accepts Hermes."
 
 if ! kill -0 "$proxy_pid" 2>/dev/null; then
     echo "[startup] Public webhook proxy exited unexpectedly." >&2
