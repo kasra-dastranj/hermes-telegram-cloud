@@ -10,7 +10,8 @@ RUN mkdir -p /opt/9router-seed \
     && npm install --global 9router@0.5.35 \
     && sed -i 's/--max-old-space-size=6144/--max-old-space-size=192/' "$(npm root --global)/9router/cli.js" \
     && npm cache clean --force \
-    && python3 -m pip install --no-cache-dir 'huggingface_hub>=0.34,<2' 'cryptography>=44,<47'
+    && uv pip install --python /opt/hermes/.venv/bin/python --no-cache \
+        'huggingface_hub>=0.34,<2' 'cryptography>=44,<47'
 
 COPY --chmod=0755 start.sh /app/start.sh
 COPY front_proxy.py /app/front_proxy.py
