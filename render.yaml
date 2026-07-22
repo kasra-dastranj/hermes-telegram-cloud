@@ -4,8 +4,19 @@ services:
     runtime: docker
     plan: free
     autoDeployTrigger: commit
+    healthCheckPath: /health
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_ALLOWED_USERS
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: HF_TOKEN
+        sync: false
+      - key: HF_BACKUP_REPO
+        sync: false
+      - key: BACKUP_ENCRYPTION_KEY
         sync: false

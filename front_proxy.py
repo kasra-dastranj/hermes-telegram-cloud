@@ -5,11 +5,21 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 PUBLIC_PORT = int(os.environ.get("PUBLIC_PORT", "7860"))
 HERMES_PORT = int(os.environ.get("TELEGRAM_WEBHOOK_PORT", "8443"))
+ROUTER_PORT = int(os.environ.get("ROUTER_PORT", "20128"))
+
+
+def port_ready(port: int, timeout: float = 1.5) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -24,7 +34,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path in ("/", "/health"):
+        path = self.path.split("?", 1)[0]
+        if path == "/":
             self._send_json(
                 200,
                 {
@@ -34,11 +45,27 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if path == "/health":
+            hermes_ready = port_ready(HERMES_PORT)
+            router_ready = port_ready(ROUTER_PORT)
+            healthy = hermes_ready and router_ready
+            self._send_json(
+                200 if healthy else 503,
+                {
+                    "ok": healthy,
+                    "service": "hermes-telegram",
+                    "hermes": "ready" if hermes_ready else "unavailable",
+                    "router": "ready" if router_ready else "unavailable",
+                },
+            )
+            return
         self._send_json(404, {"ok": False, "error": "not_found"})
 
     def do_HEAD(self) -> None:  # noqa: N802
-        if self.path in ("/", "/health"):
-            self.send_response(200)
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/health"):
+            healthy = path == "/" or (port_ready(HERMES_PORT) and port_ready(ROUTER_PORT))
+            self.send_response(200 if healthy else 503)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -62,9 +89,7 @@ class Handler(BaseHTTPRequestHandler):
         forwarded_headers["Content-Length"] = str(len(body))
 
         try:
-            connection = http.client.HTTPConnection(
-                "127.0.0.1", HERMES_PORT, timeout=15
-            )
+            connection = http.client.HTTPConnection("127.0.0.1", HERMES_PORT, timeout=30)
             connection.request("POST", "/telegram", body=body, headers=forwarded_headers)
             response = connection.getresponse()
             response_body = response.read()
@@ -80,7 +105,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(response_body)
             connection.close()
-        except (ConnectionError, OSError, TimeoutError):
+        except (ConnectionError, OSError, TimeoutError, http.client.HTTPException):
             # Telegram retries non-2xx webhook deliveries. This is expected
             # briefly while a free Render instance is waking up.
             self._send_json(503, {"ok": False, "error": "hermes_starting"})

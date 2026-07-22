@@ -1,4 +1,4 @@
-FROM nousresearch/hermes-agent:latest
+FROM nousresearch/hermes-agent:v2026.7.20@sha256:f7b35053268f532f98955195c909f15a230470fbcbdacaa9fdecb95707dad04a
 
 USER root
 
@@ -9,14 +9,16 @@ ENV DATA_DIR=/opt/9router-seed
 RUN mkdir -p /opt/9router-seed \
     && npm install --global 9router@0.5.35 \
     && sed -i 's/--max-old-space-size=6144/--max-old-space-size=192/' "$(npm root --global)/9router/cli.js" \
-    && npm cache clean --force
+    && npm cache clean --force \
+    && python3 -m pip install --no-cache-dir 'huggingface_hub>=0.34,<2' 'cryptography>=44,<47'
 
 COPY --chmod=0755 start.sh /app/start.sh
 COPY front_proxy.py /app/front_proxy.py
 COPY configure_9router.js /app/configure_9router.js
 COPY patch_hermes_stt.py /app/patch_hermes_stt.py
+COPY backup_sync.py /app/backup_sync.py
 
-# Hermes v0.18.2 does not pass a language to Groq Whisper. Patch only that
+# Hermes v0.19.0 does not pass a language to Groq Whisper. Patch only that
 # exact call at build time so Persian voice notes stay Persian. The patch
 # deliberately fails the build if an upstream image changes the target code.
 RUN python3 /app/patch_hermes_stt.py

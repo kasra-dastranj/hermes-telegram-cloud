@@ -17,10 +17,12 @@ export HERMES_HOME="${HERMES_HOME:-/opt/data}"
 export DATA_DIR="${DATA_DIR:-/opt/data/9router}"
 export PUBLIC_PORT="${PORT:-7860}"
 export TELEGRAM_WEBHOOK_PORT="${TELEGRAM_WEBHOOK_PORT:-8443}"
-export HERMES_TELEGRAM_DISABLE_FALLBACK_IPS="${HERMES_TELEGRAM_DISABLE_FALLBACK_IPS:-true}"
-export HERMES_TELEGRAM_INIT_TIMEOUT="${HERMES_TELEGRAM_INIT_TIMEOUT:-15}"
+export HERMES_TELEGRAM_DISABLE_FALLBACK_IPS="${HERMES_TELEGRAM_DISABLE_FALLBACK_IPS:-false}"
+export HERMES_TELEGRAM_INIT_TIMEOUT="${HERMES_TELEGRAM_INIT_TIMEOUT:-30}"
 export STT_GROQ_MODEL="${STT_GROQ_MODEL:-whisper-large-v3-turbo}"
 export STT_GROQ_LANGUAGE="${STT_GROQ_LANGUAGE:-fa}"
+export BACKUP_INTERVAL_SECONDS="${BACKUP_INTERVAL_SECONDS:-600}"
+export BACKUP_INITIAL_DELAY_SECONDS="${BACKUP_INITIAL_DELAY_SECONDS:-60}"
 
 if [ -z "${TELEGRAM_WEBHOOK_URL:-}" ]; then
     if [ -n "${SPACE_HOST:-}" ]; then
@@ -43,6 +45,11 @@ fi
 
 mkdir -p "$HERMES_HOME" "$DATA_DIR"
 
+# A free Render filesystem is ephemeral. Restore only when no local state.db
+# exists, so the same image also behaves correctly after migration to a VPS
+# with a persistent volume. Backup failures never prevent the bot from booting.
+python3 /app/backup_sync.py restore || true
+
 if [ -d /opt/9router-seed/runtime ] && [ ! -d "$DATA_DIR/runtime" ]; then
     echo "[startup] Seeding 9Router runtime dependencies..."
     cp -a /opt/9router-seed/. "$DATA_DIR/"
@@ -57,8 +64,11 @@ model:
   base_url: http://127.0.0.1:20128/v1
   api_key: local-no-key-required
   api_mode: chat_completions
+  context_length: 131072
+  max_tokens: 8192
 agent:
-  max_turns: 60
+  max_turns: 35
+  api_max_retries: 1
   verbose: false
   reasoning_effort: medium
   image_input_mode: text
@@ -68,6 +78,15 @@ terminal:
 display:
   compact: false
   streaming: true
+  busy_input_mode: queue
+  long_running_notifications: true
+compression:
+  enabled: true
+  threshold: 0.35
+  target_ratio: 0.15
+  protect_last_n: 12
+session_reset:
+  mode: none
 stt:
   enabled: true
   echo_transcripts: true
@@ -94,8 +113,16 @@ echo "[startup] Starting 9Router on internal port 20128..."
 router_pid=$!
 
 cleanup() {
+    trap - EXIT INT TERM
+    if [ -n "${gateway_pid:-}" ]; then
+        kill "$gateway_pid" 2>/dev/null || true
+    fi
+    if [ -n "${backup_pid:-}" ]; then
+        kill "$backup_pid" 2>/dev/null || true
+    fi
     kill "$proxy_pid" 2>/dev/null || true
     kill "$router_pid" 2>/dev/null || true
+    wait 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -156,22 +183,71 @@ fi
 echo "[startup] Starting Hermes Telegram webhook at ${TELEGRAM_WEBHOOK_URL}"
 telegram_probe_status="$(python3 - <<'PY'
 import os
+import time
 import urllib.error
 import urllib.request
 
 url = "https://api.telegram.org/bot" + os.environ["TELEGRAM_BOT_TOKEN"] + "/getMe"
-try:
-    with urllib.request.urlopen(url, timeout=20) as response:
-        print(response.status)
-except urllib.error.HTTPError as exc:
-    print(exc.code)
-except Exception:
-    print("000")
+status = "000"
+for attempt in range(1, 4):
+    try:
+        with urllib.request.urlopen(url, timeout=20) as response:
+            status = str(response.status)
+            break
+    except urllib.error.HTTPError as exc:
+        status = str(exc.code)
+        if 400 <= exc.code < 500 and exc.code != 429:
+            break
+    except Exception:
+        status = "000"
+    time.sleep(attempt * 2)
+print(status)
 PY
 )"
 echo "[startup] Direct Telegram API probe returned HTTP ${telegram_probe_status:-000}."
 if [ "$telegram_probe_status" != "200" ]; then
-    echo "[startup] Telegram token or outbound connectivity check failed." >&2
-    exit 1
+    case "$telegram_probe_status" in
+        401|404)
+            echo "[startup] Telegram rejected the bot token; refusing to start." >&2
+            exit 1
+            ;;
+        *)
+            echo "[startup] Telegram is temporarily unreachable; Hermes will keep retrying." >&2
+            ;;
+    esac
 fi
-exec hermes gateway run
+
+hermes gateway run &
+gateway_pid=$!
+
+# Keep the backup client out of RAM between runs. A short-lived process wakes
+# every interval, uploads one encrypted snapshot, then exits.
+backup_loop() {
+    sleep "$BACKUP_INITIAL_DELAY_SECONDS"
+    while :; do
+        python3 /app/backup_sync.py backup || true
+        sleep "$BACKUP_INTERVAL_SECONDS"
+    done
+}
+backup_loop &
+backup_pid=$!
+
+# Supervise all three functional processes. If Hermes, 9Router, or the public
+# proxy dies, exit the container so Render performs a clean restart and the
+# encrypted state is restored instead of leaving a half-alive deployment.
+while :; do
+    for process_spec in \
+        "proxy:$proxy_pid" \
+        "9router:$router_pid" \
+        "hermes:$gateway_pid"
+    do
+        process_name="${process_spec%%:*}"
+        process_pid="${process_spec#*:}"
+        if ! kill -0 "$process_pid" 2>/dev/null; then
+            wait "$process_pid" 2>/dev/null || process_status=$?
+            echo "[supervisor] $process_name exited unexpectedly (status ${process_status:-unknown})." >&2
+            exit 1
+        fi
+    done
+    sleep 5
+done
