@@ -104,7 +104,7 @@ model:
   max_tokens: 8192
 agent:
   max_turns: 35
-  api_max_retries: 2
+  api_max_retries: 1
   intent_ack_continuation: true
   verbose: false
   reasoning_effort: medium

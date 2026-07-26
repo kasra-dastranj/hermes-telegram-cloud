@@ -11,12 +11,44 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 
 LISTEN_PORT = int(os.environ.get("MODEL_PROXY_PORT", "20129"))
 ROUTER_PORT = int(os.environ.get("ROUTER_PORT", "20128"))
+MODEL_ATTEMPT_TIMEOUT = int(os.environ.get("MODEL_ATTEMPT_TIMEOUT", "90"))
+FALLBACK_MODELS_FILE = os.environ.get(
+    "FALLBACK_MODELS_FILE", "/opt/data/9router/fallback-models.json"
+)
+COMBO_MODEL = os.environ.get("COMBO_MODEL", "hermes-free")
+
+
+def load_fallback_models() -> list[str]:
+    """Load the exact enabled-model order written by configure_9router.js."""
+    with open(FALLBACK_MODELS_FILE, encoding="utf-8") as manifest:
+        models = json.load(manifest)
+    if (
+        not isinstance(models, list)
+        or not models
+        or any(not isinstance(model, str) or not model.strip() for model in models)
+    ):
+        raise ValueError("fallback model manifest is invalid")
+    return [model.strip() for model in models]
+
+
+def choice_has_output(choice: dict[str, Any]) -> bool:
+    """Reject provider HTTP-200 responses that contain no usable assistant output."""
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        return True
+    if isinstance(message.get("tool_calls"), list) and message["tool_calls"]:
+        return True
+    return any(message.get(key) for key in ("function_call", "refusal"))
 
 
 def response_to_sse(payload: dict[str, Any]) -> bytes:
@@ -39,6 +71,8 @@ def response_to_sse(payload: dict[str, Any]) -> bytes:
             choice.get("message"), dict
         ):
             raise ValueError("completed response contains an invalid choice")
+        if not choice_has_output(choice):
+            raise ValueError("completed response contains no usable output")
         index = choice.get("index", position)
         message = dict(choice.get("message") or {})
         delta: dict[str, Any] = {}
@@ -89,18 +123,117 @@ def response_to_sse(payload: dict[str, Any]) -> bytes:
 class Handler(BaseHTTPRequestHandler):
     server_version = "HermesModelBuffer/1.0"
 
+    def _router_request(
+        self, method: str, path: str, raw_body: bytes, headers: dict[str, str]
+    ) -> tuple[int, list[tuple[str, str]], bytes]:
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", ROUTER_PORT, timeout=MODEL_ATTEMPT_TIMEOUT
+        )
+        try:
+            connection.request(
+                method, path, body=raw_body or None, headers=headers
+            )
+            response = connection.getresponse()
+            return response.status, response.getheaders(), response.read()
+        finally:
+            connection.close()
+
+    def _send_json_error(self, status: int, message: str) -> None:
+        body = json.dumps(
+            {"error": {"message": message, "type": "model_proxy_error"}}
+        ).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_stream(self, status: int, response_body: bytes) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(response_body)))
+        self.end_headers()
+        self.wfile.write(response_body)
+
+    def _fallback_completion(
+        self,
+        request_payload: dict[str, Any],
+        forwarded_headers: dict[str, str],
+    ) -> None:
+        try:
+            models = load_fallback_models()
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+            self._send_json_error(503, f"Fallback manifest unavailable: {error}")
+            return
+
+        failures: list[str] = []
+        for position, model in enumerate(models, start=1):
+            attempt_payload = {**request_payload, "model": model, "stream": False}
+            attempt_body = json.dumps(
+                attempt_payload, ensure_ascii=False
+            ).encode("utf-8")
+            attempt_headers = {
+                **forwarded_headers,
+                "Content-Length": str(len(attempt_body)),
+            }
+            print(
+                f"[model-proxy] Trying fallback model {position}/{len(models)}: {model}",
+                flush=True,
+            )
+            try:
+                status, _headers, response_body = self._router_request(
+                    "POST", self.path, attempt_body, attempt_headers
+                )
+            except (ConnectionError, OSError, TimeoutError, socket.timeout,
+                    http.client.HTTPException) as error:
+                failures.append(f"{model}: {type(error).__name__}")
+                print(
+                    f"[model-proxy] Model {model} failed: {type(error).__name__}",
+                    flush=True,
+                )
+                continue
+
+            if 200 <= status < 300:
+                try:
+                    completed = json.loads(response_body)
+                    stream_body = response_to_sse(completed)
+                except (TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
+                    failures.append(f"{model}: invalid response")
+                    print(
+                        f"[model-proxy] Model {model} returned invalid output: {error}",
+                        flush=True,
+                    )
+                    continue
+                print(f"[model-proxy] Selected fallback model: {model}", flush=True)
+                self._send_stream(status, stream_body)
+                return
+
+            failures.append(f"{model}: HTTP {status}")
+            print(
+                f"[model-proxy] Model {model} failed with HTTP {status}",
+                flush=True,
+            )
+
+        summary = "; ".join(failures[-3:]) or "no model attempts completed"
+        self._send_json_error(
+            502, f"All {len(models)} fallback models failed ({summary})"
+        )
+
     def _relay(self, method: str) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         raw_body = self.rfile.read(length) if length else b""
         requested_stream = False
 
-        if method == "POST" and self.path.split("?", 1)[0].endswith(
+        is_completion = method == "POST" and self.path.split("?", 1)[0].endswith(
             "/chat/completions"
-        ):
+        )
+        request_payload: dict[str, Any] | None = None
+        if is_completion:
             try:
                 request_payload = json.loads(raw_body)
             except (TypeError, ValueError):
-                self.send_error(400, "Invalid JSON")
+                self._send_json_error(400, "Invalid JSON")
                 return
             requested_stream = bool(request_payload.get("stream"))
             request_payload["stream"] = False
@@ -116,33 +249,32 @@ class Handler(BaseHTTPRequestHandler):
         if raw_body:
             forwarded_headers["Content-Length"] = str(len(raw_body))
 
-        connection = http.client.HTTPConnection(
-            "127.0.0.1", ROUTER_PORT, timeout=300
-        )
         try:
-            connection.request(
-                method, self.path, body=raw_body or None, headers=forwarded_headers
-            )
-            response = connection.getresponse()
-            response_body = response.read()
+            if (
+                is_completion
+                and requested_stream
+                and request_payload is not None
+                and request_payload.get("model") == COMBO_MODEL
+            ):
+                self._fallback_completion(request_payload, forwarded_headers)
+                return
 
-            if requested_stream and 200 <= response.status < 300:
+            status, response_headers, response_body = self._router_request(
+                method, self.path, raw_body, forwarded_headers
+            )
+
+            if requested_stream and 200 <= status < 300:
                 try:
                     completed = json.loads(response_body)
                     response_body = response_to_sse(completed)
-                except (TypeError, ValueError, KeyError):
-                    self.send_error(502, "Invalid completed model response")
+                except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                    self._send_json_error(502, "Invalid completed model response")
                     return
-                self.send_response(response.status)
-                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-                self.send_header("Cache-Control", "no-cache")
-                self.send_header("Content-Length", str(len(response_body)))
-                self.end_headers()
-                self.wfile.write(response_body)
+                self._send_stream(status, response_body)
                 return
 
-            self.send_response(response.status)
-            for key, value in response.getheaders():
+            self.send_response(status)
+            for key, value in response_headers:
                 if key.lower() not in {
                     "connection",
                     "content-length",
@@ -153,16 +285,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(response_body)))
             self.end_headers()
             self.wfile.write(response_body)
-        except (ConnectionError, OSError, TimeoutError, http.client.HTTPException):
-            self.send_error(502, "9Router unavailable")
-        finally:
-            connection.close()
+        except (ConnectionError, OSError, TimeoutError, socket.timeout,
+                http.client.HTTPException):
+            self._send_json_error(502, "9Router unavailable")
 
     def do_GET(self) -> None:  # noqa: N802
         self._relay("GET")
 
     def do_POST(self) -> None:  # noqa: N802
         self._relay("POST")
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        self.send_response(200)
+        self.end_headers()
 
     def log_message(self, format: str, *args: object) -> None:
         print("[model-proxy] " + (format % args), flush=True)

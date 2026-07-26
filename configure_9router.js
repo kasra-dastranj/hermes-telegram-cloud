@@ -6,6 +6,9 @@ const { DatabaseSync } = require("node:sqlite");
 
 const dataDir = process.env.DATA_DIR || "/opt/data/9router";
 const databasePath = path.join(dataDir, "db", "data.sqlite");
+const fallbackManifestPath =
+  process.env.FALLBACK_MODELS_FILE ||
+  path.join(dataDir, "fallback-models.json");
 
 const openCodeModels = [
   "nemotron-3-ultra-free",
@@ -38,6 +41,17 @@ const secretProviders = [
 
 const comboId = "hermes-free-fallback";
 const comboName = "hermes-free";
+const preferredModelOrder = [
+  "oc/nemotron-3-ultra-free",
+  "groq/openai/gpt-oss-120b",
+  "oc/north-mini-code-free",
+  "groq/llama-3.3-70b-versatile",
+  "oc/deepseek-v4-flash-free",
+  "groq/qwen/qwen3.6-27b",
+  "oc/mimo-v2.5-free",
+  "oc/big-pickle",
+  "openrouter/openrouter/free",
+];
 
 function configureDatabase(enabledProviders) {
   if (!fs.existsSync(databasePath)) {
@@ -94,7 +108,7 @@ function configureDatabase(enabledProviders) {
          updatedAt = excluded.updatedAt`
     );
 
-    const comboModels = [];
+    const registeredModels = [];
     for (const model of openCodeModels) {
       upsertModel.run(
         `oc|${model}|llm`,
@@ -105,7 +119,7 @@ function configureDatabase(enabledProviders) {
           name: model,
         })
       );
-      comboModels.push(`oc/${model}`);
+      registeredModels.push(`oc/${model}`);
     }
 
     for (const spec of enabledProviders) {
@@ -136,9 +150,15 @@ function configureDatabase(enabledProviders) {
             name: model,
           })
         );
-        comboModels.push(`${spec.provider}/${model}`);
+        registeredModels.push(`${spec.provider}/${model}`);
       }
     }
+
+    const registeredSet = new Set(registeredModels);
+    const comboModels = [
+      ...preferredModelOrder.filter((model) => registeredSet.has(model)),
+      ...registeredModels.filter((model) => !preferredModelOrder.includes(model)),
+    ];
 
     const now = new Date().toISOString();
     db.prepare(
@@ -184,6 +204,12 @@ function main() {
   }
 
   const comboModels = configureDatabase(enabledProviders);
+  const temporaryManifest = `${fallbackManifestPath}.tmp`;
+  fs.writeFileSync(temporaryManifest, JSON.stringify(comboModels), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  fs.renameSync(temporaryManifest, fallbackManifestPath);
   console.log(
     `[startup] 9Router configured fallback combo "${comboName}" with ` +
       `${comboModels.length} models across ${enabledProviders.length + 1} providers ` +
@@ -203,6 +229,8 @@ if (require.main === module) {
 module.exports = {
   comboName,
   configureDatabase,
+  fallbackManifestPath,
   openCodeModels,
+  preferredModelOrder,
   secretProviders,
 };

@@ -21,21 +21,24 @@ The default `hermes-free` combo tries these models in order. Provider
 connections are recreated from deployment secrets on every cold start:
 
 1. `oc/nemotron-3-ultra-free`
-2. `oc/north-mini-code-free`
-3. `oc/deepseek-v4-flash-free`
-4. `oc/mimo-v2.5-free`
-5. `oc/big-pickle`
-6. `groq/openai/gpt-oss-120b` (when `GROQ_API_KEY` is set)
-7. `groq/llama-3.3-70b-versatile` (when `GROQ_API_KEY` is set)
-8. `groq/qwen/qwen3.6-27b` (when `GROQ_API_KEY` is set)
+2. `groq/openai/gpt-oss-120b` (when `GROQ_API_KEY` is set)
+3. `oc/north-mini-code-free`
+4. `groq/llama-3.3-70b-versatile` (when `GROQ_API_KEY` is set)
+5. `oc/deepseek-v4-flash-free`
+6. `groq/qwen/qwen3.6-27b` (when `GROQ_API_KEY` is set)
+7. `oc/mimo-v2.5-free`
+8. `oc/big-pickle`
 9. `openrouter/openrouter/free` (when `OPENROUTER_API_KEY` is set)
 
-9Router automatically falls back to the next model when the current one is
-rate-limited, out of quota, overloaded, or otherwise unavailable.
+The internal model adapter calls the enabled models in order and advances when
+the current model is rate-limited, out of quota, overloaded, times out, or
+returns an empty/malformed HTTP-200 response. This compensates for providers
+that incorrectly report an empty completion as successful.
 
-Hermes retries the complete 9Router fallback chain once after a transient
-stream/network failure. New Telegram messages are queued while a long task is
-running, and context is compressed early enough for a 512 MB free instance.
+The adapter owns the complete retry/fallback chain, so Hermes does not repeat
+all nine models after a terminal failure. New Telegram messages are queued
+while a long task is running, and context is compressed early enough for a
+512 MB free instance.
 9Router responses are buffered before being converted back to a standards-
 compliant OpenAI stream, so a provider can fail over before Telegram delivery
 begins. The container supervises Hermes, 9Router, the internal model adapter,

@@ -1,4 +1,5 @@
 import json
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -75,7 +76,23 @@ def test_response_to_sse_rejects_success_without_choices():
         response_to_sse({"error": {"message": "provider failed"}})
 
 
-def test_http_adapter_buffers_router_and_streams_to_openai_sdk(monkeypatch):
+def test_response_to_sse_rejects_empty_assistant_message():
+    with pytest.raises(ValueError, match="no usable output"):
+        response_to_sse(
+            {
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": ""},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+
+def test_http_adapter_buffers_router_and_streams_to_openai_sdk(
+    monkeypatch, tmp_path
+):
     received = {}
 
     class FakeRouter(BaseHTTPRequestHandler):
@@ -108,8 +125,11 @@ def test_http_adapter_buffers_router_and_streams_to_openai_sdk(monkeypatch):
         def log_message(self, *_args):
             pass
 
+    manifest = tmp_path / "fallback-models.json"
+    manifest.write_text(json.dumps(["provider/test"]), encoding="utf-8")
     router = ThreadingHTTPServer(("127.0.0.1", 0), FakeRouter)
     monkeypatch.setattr(model_proxy, "ROUTER_PORT", router.server_port)
+    monkeypatch.setattr(model_proxy, "FALLBACK_MODELS_FILE", str(manifest))
     adapter = ThreadingHTTPServer(("127.0.0.1", 0), model_proxy.Handler)
     threads = [
         threading.Thread(target=server.serve_forever, daemon=True)
@@ -168,7 +188,7 @@ def test_http_adapter_preserves_router_error(monkeypatch):
         response = httpx.post(
             f"http://127.0.0.1:{adapter.server_port}/v1/chat/completions",
             json={
-                "model": "hermes-free",
+                "model": "direct-test",
                 "messages": [{"role": "user", "content": "سلام"}],
                 "stream": True,
             },
@@ -181,3 +201,177 @@ def test_http_adapter_preserves_router_error(monkeypatch):
 
     assert response.status_code == 429
     assert response.json()["error"]["message"] == "rate limited"
+
+
+def test_combo_falls_through_empty_success_to_next_model(monkeypatch, tmp_path):
+    attempted_models = []
+
+    class FakeRouter(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            request = json.loads(self.rfile.read(length))
+            attempted_models.append(request["model"])
+            if request["model"] == "provider/empty":
+                payload = {
+                    "id": "empty",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": ""},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+            else:
+                payload = {
+                    "id": "fallback",
+                    "model": request["model"],
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": "مدل دوم پاسخ داد",
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    manifest = tmp_path / "fallback-models.json"
+    manifest.write_text(
+        json.dumps(["provider/empty", "provider/working"]), encoding="utf-8"
+    )
+    router = ThreadingHTTPServer(("127.0.0.1", 0), FakeRouter)
+    monkeypatch.setattr(model_proxy, "ROUTER_PORT", router.server_port)
+    monkeypatch.setattr(model_proxy, "FALLBACK_MODELS_FILE", str(manifest))
+    adapter = ThreadingHTTPServer(("127.0.0.1", 0), model_proxy.Handler)
+    for server in (router, adapter):
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    try:
+        client = OpenAI(
+            base_url=f"http://127.0.0.1:{adapter.server_port}/v1",
+            api_key="local-test",
+        )
+        chunks = client.chat.completions.create(
+            model="hermes-free",
+            messages=[{"role": "user", "content": "تست fallback"}],
+            stream=True,
+        )
+        text = "".join(
+            chunk.choices[0].delta.content or ""
+            for chunk in chunks
+            if chunk.choices
+        )
+    finally:
+        adapter.shutdown()
+        router.shutdown()
+        adapter.server_close()
+        router.server_close()
+
+    assert attempted_models == ["provider/empty", "provider/working"]
+    assert text == "مدل دوم پاسخ داد"
+
+
+def test_combo_returns_json_error_after_all_models_fail(monkeypatch, tmp_path):
+    class EmptyRouter(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            body = b'{"choices":[]}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    manifest = tmp_path / "fallback-models.json"
+    manifest.write_text(json.dumps(["provider/empty"]), encoding="utf-8")
+    router = ThreadingHTTPServer(("127.0.0.1", 0), EmptyRouter)
+    monkeypatch.setattr(model_proxy, "ROUTER_PORT", router.server_port)
+    monkeypatch.setattr(model_proxy, "FALLBACK_MODELS_FILE", str(manifest))
+    adapter = ThreadingHTTPServer(("127.0.0.1", 0), model_proxy.Handler)
+    for server in (router, adapter):
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    try:
+        response = httpx.post(
+            f"http://127.0.0.1:{adapter.server_port}/v1/chat/completions",
+            json={
+                "model": "hermes-free",
+                "messages": [{"role": "user", "content": "سلام"}],
+                "stream": True,
+            },
+        )
+    finally:
+        adapter.shutdown()
+        router.shutdown()
+        adapter.server_close()
+        router.server_close()
+
+    assert response.status_code == 502
+    assert response.headers["content-type"] == "application/json"
+    assert "All 1 fallback models failed" in response.json()["error"]["message"]
+
+
+def test_combo_falls_through_timeout_to_next_model(monkeypatch, tmp_path):
+    attempted_models = []
+
+    def fake_router_request(_self, _method, _path, raw_body, _headers):
+        model = json.loads(raw_body)["model"]
+        attempted_models.append(model)
+        if model == "provider/timeout":
+            raise socket.timeout("simulated timeout")
+        body = json.dumps(
+            {
+                "model": model,
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "بازیابی پس از timeout",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return 200, [("Content-Type", "application/json")], body
+
+    manifest = tmp_path / "fallback-models.json"
+    manifest.write_text(
+        json.dumps(["provider/timeout", "provider/working"]), encoding="utf-8"
+    )
+    monkeypatch.setattr(model_proxy, "FALLBACK_MODELS_FILE", str(manifest))
+    monkeypatch.setattr(model_proxy.Handler, "_router_request", fake_router_request)
+    adapter = ThreadingHTTPServer(("127.0.0.1", 0), model_proxy.Handler)
+    threading.Thread(target=adapter.serve_forever, daemon=True).start()
+
+    try:
+        response = httpx.post(
+            f"http://127.0.0.1:{adapter.server_port}/v1/chat/completions",
+            json={
+                "model": "hermes-free",
+                "messages": [{"role": "user", "content": "سلام"}],
+                "stream": True,
+            },
+        )
+    finally:
+        adapter.shutdown()
+        adapter.server_close()
+
+    assert response.status_code == 200
+    assert attempted_models == ["provider/timeout", "provider/working"]
+    assert "بازیابی پس از timeout" in response.text
