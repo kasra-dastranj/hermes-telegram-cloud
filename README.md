@@ -36,8 +36,10 @@ rate-limited, out of quota, overloaded, or otherwise unavailable.
 Hermes retries the complete 9Router fallback chain once after a transient
 stream/network failure. New Telegram messages are queued while a long task is
 running, and context is compressed early enough for a 512 MB free instance.
-The container supervises Hermes, 9Router, and the public webhook proxy; a
-failure in any one of them causes a clean platform restart.
+9Router responses are buffered before being converted back to a standards-
+compliant OpenAI stream, so a provider can fail over before Telegram delivery
+begins. The container supervises Hermes, 9Router, the internal model adapter,
+and the public webhook proxy; a failure in any one causes a clean restart.
 
 Incoming Telegram voice messages are transcribed with Groq's
 `whisper-large-v3-turbo` model when the `GROQ_API_KEY` deployment secret is
@@ -57,23 +59,24 @@ Required deployment secrets:
 - `TELEGRAM_ALLOWED_USERS`
 - `GROQ_API_KEY` (required for Telegram voice transcription)
 - `OPENROUTER_API_KEY` (required for Telegram image analysis)
-
-Optional but strongly recommended encrypted persistence secrets:
-
 - `HF_TOKEN`: a Hugging Face token with write access to the backup Dataset
 - `HF_BACKUP_REPO`: private Dataset ID, for example `username/hermes-backup`
 - `BACKUP_ENCRYPTION_KEY`: a separately saved random secret of at least 24 characters
 
-When all three are present, the deployment stores an AES-256-GCM encrypted,
-allow-listed snapshot after the first minute and every ten minutes thereafter,
-keeps a bounded remote rollback history, and restores the latest snapshot after an ephemeral
-restart. Included state is `state.db`, sessions, memories, cron data, and the
-workspace. Environment files, credentials, configuration, 9Router's database,
-Git metadata, virtual environments, and obvious key files are excluded. The
-encryption key is never uploaded to Hugging Face.
+The deployment stores an AES-256-GCM encrypted, allow-listed snapshot after
+the first three minutes and every ten minutes thereafter, keeps a bounded
+remote rollback history, and restores the latest snapshot after an ephemeral
+restart. A restore error stops startup instead of allowing an empty instance
+to overwrite the last good backup. This deployment also requires the existing
+remote snapshot to be accessible; a missing/inaccessible backup fails closed
+instead of silently starting with no memory. Included state is `state.db`,
+sessions, memories, cron data, and the workspace. Environment files,
+credentials, configuration, 9Router's database, Git metadata, virtual
+environments, and obvious key files are excluded. The encryption key is never
+uploaded to Hugging Face.
 
-`/health` is a deep readiness check for both Hermes and 9Router. `/` remains a
-lightweight wake endpoint for Render.
+`/health` is a deep readiness check for Hermes, 9Router, and the internal model
+adapter. `/` remains a lightweight wake endpoint for Render.
 
 The Telegram webhook URL and webhook secret are derived automatically at
 runtime on Render or Hugging Face Spaces. No credentials are stored in this

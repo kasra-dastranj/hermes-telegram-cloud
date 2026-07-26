@@ -77,6 +77,12 @@ def enabled() -> bool:
     )
 
 
+def allow_missing_remote() -> bool:
+    return str(
+        os.environ.get("BACKUP_ALLOW_MISSING_REMOTE", "true")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def settings() -> tuple[Path, str, str, str]:
     home = Path(os.environ.get("HERMES_HOME", "/opt/data")).resolve()
     repo_id = str(os.environ.get("HF_BACKUP_REPO", "")).strip()
@@ -335,6 +341,10 @@ def restore_backup(force: bool = False) -> bool:
         except Exception as error:
             text = str(error).lower()
             if "404" in text or "entry not found" in text or "repository not found" in text:
+                if not allow_missing_remote():
+                    raise RuntimeError(
+                        "required remote backup is missing or inaccessible"
+                    ) from error
                 log("No remote backup exists yet; starting with empty state.")
                 return False
             raise

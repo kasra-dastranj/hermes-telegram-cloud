@@ -4,6 +4,7 @@ import sqlite3
 import tarfile
 from pathlib import Path
 
+import huggingface_hub
 import pytest
 
 import backup_sync
@@ -78,3 +79,29 @@ def test_safe_members_rejects_path_traversal(tmp_path: Path) -> None:
     with tarfile.open(archive_path, "r") as archive:
         with pytest.raises(ValueError, match="unsafe archive member"):
             backup_sync.safe_members(archive)
+
+
+def test_missing_remote_policy_defaults_safe_for_reusable_tool(monkeypatch):
+    monkeypatch.delenv("BACKUP_ALLOW_MISSING_REMOTE", raising=False)
+    assert backup_sync.allow_missing_remote() is True
+
+    monkeypatch.setenv("BACKUP_ALLOW_MISSING_REMOTE", "false")
+    assert backup_sync.allow_missing_remote() is False
+
+
+def test_required_missing_remote_backup_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HF_TOKEN", "test-token")
+    monkeypatch.setenv("HF_BACKUP_REPO", "test/private-backup")
+    monkeypatch.setenv(
+        "BACKUP_ENCRYPTION_KEY", "a sufficiently long test encryption key"
+    )
+    monkeypatch.setenv("BACKUP_ALLOW_MISSING_REMOTE", "false")
+
+    def missing_backup(**_kwargs):
+        raise RuntimeError("404 repository not found")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", missing_backup)
+
+    with pytest.raises(RuntimeError, match="required remote backup"):
+        backup_sync.restore_backup()

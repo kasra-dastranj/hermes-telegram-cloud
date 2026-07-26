@@ -12,6 +12,9 @@ require_env() {
 
 require_env TELEGRAM_BOT_TOKEN
 require_env TELEGRAM_ALLOWED_USERS
+require_env HF_TOKEN
+require_env HF_BACKUP_REPO
+require_env BACKUP_ENCRYPTION_KEY
 
 export HERMES_HOME="${HERMES_HOME:-/opt/data}"
 export DATA_DIR="${DATA_DIR:-/opt/data/9router}"
@@ -23,7 +26,7 @@ export HERMES_TELEGRAM_INIT_TIMEOUT="${HERMES_TELEGRAM_INIT_TIMEOUT:-30}"
 export STT_GROQ_MODEL="${STT_GROQ_MODEL:-whisper-large-v3-turbo}"
 export STT_GROQ_LANGUAGE="${STT_GROQ_LANGUAGE:-fa}"
 export BACKUP_INTERVAL_SECONDS="${BACKUP_INTERVAL_SECONDS:-600}"
-export BACKUP_INITIAL_DELAY_SECONDS="${BACKUP_INITIAL_DELAY_SECONDS:-60}"
+export BACKUP_INITIAL_DELAY_SECONDS="${BACKUP_INITIAL_DELAY_SECONDS:-180}"
 
 if [ -z "${TELEGRAM_WEBHOOK_URL:-}" ]; then
     if [ -n "${SPACE_HOST:-}" ]; then
@@ -45,11 +48,19 @@ if [ -z "${TELEGRAM_WEBHOOK_SECRET:-}" ]; then
 fi
 
 mkdir -p "$HERMES_HOME" "$DATA_DIR"
+chown hermes:hermes "$HERMES_HOME"
 
 # A free Render filesystem is ephemeral. Restore only when no local state.db
 # exists, so the same image also behaves correctly after migration to a VPS
-# with a persistent volume. Backup failures never prevent the bot from booting.
-python3 /app/backup_sync.py restore || true
+# with a persistent volume. A genuine restore failure is fatal: booting empty
+# and uploading 60 seconds later could otherwise overwrite the last good
+# remote snapshot. Exit code 2 only means there was no snapshot to restore.
+restore_status=0
+python3 /app/backup_sync.py restore || restore_status=$?
+if [ "$restore_status" -eq 1 ]; then
+    echo "[startup] Encrypted state restore failed; refusing to overwrite the remote backup." >&2
+    exit 1
+fi
 
 # start.sh and the backup helper run as root, while the published Hermes image
 # intentionally drops the gateway to the unprivileged `hermes` user. Restored
@@ -93,7 +104,8 @@ model:
   max_tokens: 8192
 agent:
   max_turns: 35
-  api_max_retries: 1
+  api_max_retries: 2
+  intent_ack_continuation: true
   verbose: false
   reasoning_effort: medium
   image_input_mode: text
@@ -102,12 +114,12 @@ terminal:
   cwd: /opt/data/workspace
 display:
   compact: false
-  streaming: true
+  streaming: false
   busy_input_mode: queue
   long_running_notifications: true
 streaming:
-  enabled: true
-  mode: auto
+  enabled: false
+  mode: off
 compression:
   enabled: true
   threshold: 0.35
@@ -135,6 +147,7 @@ platforms:
     extra:
       status_indicator: true
 YAML
+chown hermes:hermes "$HERMES_HOME/config.yaml"
 
 echo "[startup] Opening public port ${PUBLIC_PORT} immediately..."
 python3 /app/front_proxy.py &
@@ -280,9 +293,9 @@ backup_loop() {
 backup_loop &
 backup_pid=$!
 
-# Supervise all three functional processes. If Hermes, 9Router, or the public
-# proxy dies, exit the container so Render performs a clean restart and the
-# encrypted state is restored instead of leaving a half-alive deployment.
+# Supervise every functional process. If Hermes, 9Router, either proxy, or the
+# public listener dies, exit the container so Render performs a clean restart
+# and restores encrypted state instead of leaving a half-alive deployment.
 while :; do
     for process_spec in \
         "proxy:$proxy_pid" \

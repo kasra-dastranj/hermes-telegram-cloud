@@ -21,6 +21,10 @@ ROUTER_PORT = int(os.environ.get("ROUTER_PORT", "20128"))
 
 def response_to_sse(payload: dict[str, Any]) -> bytes:
     """Convert one completed Chat Completions response to OpenAI SSE chunks."""
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("completed response has no choices")
+
     base = {
         "id": payload.get("id", "chatcmpl-buffered"),
         "object": "chat.completion.chunk",
@@ -30,7 +34,11 @@ def response_to_sse(payload: dict[str, Any]) -> bytes:
     content_choices = []
     finish_choices = []
 
-    for position, choice in enumerate(payload.get("choices") or []):
+    for position, choice in enumerate(choices):
+        if not isinstance(choice, dict) or not isinstance(
+            choice.get("message"), dict
+        ):
+            raise ValueError("completed response contains an invalid choice")
         index = choice.get("index", position)
         message = dict(choice.get("message") or {})
         delta: dict[str, Any] = {}

@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PUBLIC_PORT = int(os.environ.get("PUBLIC_PORT", "7860"))
 HERMES_PORT = int(os.environ.get("TELEGRAM_WEBHOOK_PORT", "8443"))
 ROUTER_PORT = int(os.environ.get("ROUTER_PORT", "20128"))
+MODEL_PROXY_PORT = int(os.environ.get("MODEL_PROXY_PORT", "20129"))
 
 
 def port_ready(port: int, timeout: float = 1.5) -> bool:
@@ -20,6 +21,14 @@ def port_ready(port: int, timeout: float = 1.5) -> bool:
             return True
     except OSError:
         return False
+
+
+def component_health() -> dict[str, bool]:
+    return {
+        "hermes": port_ready(HERMES_PORT),
+        "router": port_ready(ROUTER_PORT),
+        "model_proxy": port_ready(MODEL_PROXY_PORT),
+    }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -46,16 +55,17 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if path == "/health":
-            hermes_ready = port_ready(HERMES_PORT)
-            router_ready = port_ready(ROUTER_PORT)
-            healthy = hermes_ready and router_ready
+            components = component_health()
+            healthy = all(components.values())
             self._send_json(
                 200 if healthy else 503,
                 {
                     "ok": healthy,
                     "service": "hermes-telegram",
-                    "hermes": "ready" if hermes_ready else "unavailable",
-                    "router": "ready" if router_ready else "unavailable",
+                    **{
+                        name: "ready" if ready else "unavailable"
+                        for name, ready in components.items()
+                    },
                 },
             )
             return
@@ -64,7 +74,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         if path in ("/", "/health"):
-            healthy = path == "/" or (port_ready(HERMES_PORT) and port_ready(ROUTER_PORT))
+            healthy = path == "/" or all(component_health().values())
             self.send_response(200 if healthy else 503)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", "0")
