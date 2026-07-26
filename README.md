@@ -20,11 +20,11 @@ This Docker deployment runs:
 The default `hermes-free` combo tries these models in order. Provider
 connections are recreated from deployment secrets on every cold start:
 
-1. `oc/deepseek-v4-flash-free`
-2. `oc/mimo-v2.5-free`
-3. `oc/big-pickle`
-4. `oc/nemotron-3-ultra-free`
-5. `oc/north-mini-code-free`
+1. `oc/nemotron-3-ultra-free`
+2. `oc/north-mini-code-free`
+3. `oc/deepseek-v4-flash-free`
+4. `oc/mimo-v2.5-free`
+5. `oc/big-pickle`
 6. `groq/openai/gpt-oss-120b` (when `GROQ_API_KEY` is set)
 7. `groq/llama-3.3-70b-versatile` (when `GROQ_API_KEY` is set)
 8. `groq/qwen/qwen3.6-27b` (when `GROQ_API_KEY` is set)

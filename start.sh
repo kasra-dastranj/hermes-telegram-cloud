@@ -110,12 +110,14 @@ streaming:
 compression:
   enabled: true
   threshold: 0.35
-  threshold_tokens: 45000
+  threshold_tokens: 36000
   target_ratio: 0.15
-  protect_last_n: 8
-  proactive_prune_tokens: 28000
+  protect_last_n: 6
+  proactive_prune_tokens: 24000
   proactive_prune_min_result_chars: 8000
   proactive_prune_min_reclaim_tokens: 4096
+  idle_compact_after_seconds: 600
+  in_place: true
 session_reset:
   mode: none
 stt:

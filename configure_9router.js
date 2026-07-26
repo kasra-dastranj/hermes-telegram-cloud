@@ -8,11 +8,11 @@ const dataDir = process.env.DATA_DIR || "/opt/data/9router";
 const databasePath = path.join(dataDir, "db", "data.sqlite");
 
 const openCodeModels = [
+  "nemotron-3-ultra-free",
+  "north-mini-code-free",
   "deepseek-v4-flash-free",
   "mimo-v2.5-free",
   "big-pickle",
-  "nemotron-3-ultra-free",
-  "north-mini-code-free",
 ];
 
 const secretProviders = [
