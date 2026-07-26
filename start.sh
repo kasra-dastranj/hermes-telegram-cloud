@@ -50,6 +50,30 @@ mkdir -p "$HERMES_HOME" "$DATA_DIR"
 # with a persistent volume. Backup failures never prevent the bot from booting.
 python3 /app/backup_sync.py restore || true
 
+# start.sh and the backup helper run as root, while the published Hermes image
+# intentionally drops the gateway to the unprivileged `hermes` user. Restored
+# tar members therefore need an explicit ownership handoff before Hermes can
+# atomically replace sessions/*.tmp or update its SQLite state.
+for state_dir in sessions memories cron workspace checkpoints
+do
+    mkdir -p "$HERMES_HOME/$state_dir"
+    chown -hR hermes:hermes "$HERMES_HOME/$state_dir"
+done
+for state_file in \
+    "$HERMES_HOME"/state.db \
+    "$HERMES_HOME"/state.db-wal \
+    "$HERMES_HOME"/state.db-shm \
+    "$HERMES_HOME"/USER.md \
+    "$HERMES_HOME"/SOUL.md \
+    "$HERMES_HOME"/MEMORY.md \
+    "$HERMES_HOME"/AGENTS.md \
+    "$HERMES_HOME"/cron-jobs.json
+do
+    if [ -e "$state_file" ]; then
+        chown -h hermes:hermes "$state_file"
+    fi
+done
+
 if [ -d /opt/9router-seed/runtime ] && [ ! -d "$DATA_DIR/runtime" ]; then
     echo "[startup] Seeding 9Router runtime dependencies..."
     cp -a /opt/9router-seed/. "$DATA_DIR/"
@@ -101,8 +125,6 @@ platforms:
     extra:
       status_indicator: true
 YAML
-
-mkdir -p "$HERMES_HOME/workspace"
 
 echo "[startup] Opening public port ${PUBLIC_PORT} immediately..."
 python3 /app/front_proxy.py &
