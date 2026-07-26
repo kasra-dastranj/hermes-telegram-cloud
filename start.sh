@@ -17,6 +17,7 @@ export HERMES_HOME="${HERMES_HOME:-/opt/data}"
 export DATA_DIR="${DATA_DIR:-/opt/data/9router}"
 export PUBLIC_PORT="${PORT:-7860}"
 export TELEGRAM_WEBHOOK_PORT="${TELEGRAM_WEBHOOK_PORT:-8443}"
+export MODEL_PROXY_PORT="${MODEL_PROXY_PORT:-20129}"
 export HERMES_TELEGRAM_DISABLE_FALLBACK_IPS="${HERMES_TELEGRAM_DISABLE_FALLBACK_IPS:-false}"
 export HERMES_TELEGRAM_INIT_TIMEOUT="${HERMES_TELEGRAM_INIT_TIMEOUT:-30}"
 export STT_GROQ_MODEL="${STT_GROQ_MODEL:-whisper-large-v3-turbo}"
@@ -85,7 +86,7 @@ cat > "$HERMES_HOME/config.yaml" <<'YAML'
 model:
   default: hermes-free
   provider: custom
-  base_url: http://127.0.0.1:20128/v1
+  base_url: http://127.0.0.1:20129/v1
   api_key: local-no-key-required
   api_mode: chat_completions
   context_length: 131072
@@ -101,12 +102,12 @@ terminal:
   cwd: /opt/data/workspace
 display:
   compact: false
-  streaming: false
+  streaming: true
   busy_input_mode: queue
   long_running_notifications: true
 streaming:
-  enabled: false
-  mode: off
+  enabled: true
+  mode: auto
 compression:
   enabled: true
   threshold: 0.35
@@ -150,6 +151,9 @@ cleanup() {
     fi
     if [ -n "${backup_pid:-}" ]; then
         kill "$backup_pid" 2>/dev/null || true
+    fi
+    if [ -n "${model_proxy_pid:-}" ]; then
+        kill "$model_proxy_pid" 2>/dev/null || true
     fi
     kill "$proxy_pid" 2>/dev/null || true
     kill "$router_pid" 2>/dev/null || true
@@ -211,6 +215,19 @@ if ! kill -0 "$proxy_pid" 2>/dev/null; then
     exit 1
 fi
 
+echo "[startup] Starting buffered model proxy on internal port ${MODEL_PROXY_PORT}..."
+python3 /app/model_proxy.py &
+model_proxy_pid=$!
+attempt=0
+until curl -fsS "http://127.0.0.1:${MODEL_PROXY_PORT}/v1/models" >/dev/null 2>&1; do
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge 20 ]; then
+        echo "[startup] Buffered model proxy did not become ready in time." >&2
+        exit 1
+    fi
+    sleep 1
+done
+
 echo "[startup] Starting Hermes Telegram webhook at ${TELEGRAM_WEBHOOK_URL}"
 telegram_probe_status="$(python3 - <<'PY'
 import os
@@ -270,6 +287,7 @@ while :; do
     for process_spec in \
         "proxy:$proxy_pid" \
         "9router:$router_pid" \
+        "model-proxy:$model_proxy_pid" \
         "hermes:$gateway_pid"
     do
         process_name="${process_spec%%:*}"
