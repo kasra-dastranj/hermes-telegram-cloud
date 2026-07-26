@@ -101,14 +101,21 @@ terminal:
   cwd: /opt/data/workspace
 display:
   compact: false
-  streaming: true
+  streaming: false
   busy_input_mode: queue
   long_running_notifications: true
+streaming:
+  enabled: false
+  mode: off
 compression:
   enabled: true
   threshold: 0.35
+  threshold_tokens: 45000
   target_ratio: 0.15
-  protect_last_n: 12
+  protect_last_n: 8
+  proactive_prune_tokens: 28000
+  proactive_prune_min_result_chars: 8000
+  proactive_prune_min_reclaim_tokens: 4096
 session_reset:
   mode: none
 stt:

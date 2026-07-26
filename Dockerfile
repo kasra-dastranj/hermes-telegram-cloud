@@ -17,17 +17,20 @@ COPY --chmod=0755 start.sh /app/start.sh
 COPY front_proxy.py /app/front_proxy.py
 COPY configure_9router.js /app/configure_9router.js
 COPY patch_hermes_stt.py /app/patch_hermes_stt.py
+COPY patch_hermes_streaming.py /app/patch_hermes_streaming.py
 COPY backup_sync.py /app/backup_sync.py
 
 # Hermes v0.19.0 does not pass a language to Groq Whisper. Patch only that
 # exact call at build time so Persian voice notes stay Persian. The patch
 # deliberately fails the build if an upstream image changes the target code.
 RUN python3 /app/patch_hermes_stt.py
+RUN python3 /app/patch_hermes_streaming.py
 
 ENV HERMES_HOME=/opt/data \
     DATA_DIR=/opt/data/9router \
     TELEGRAM_WEBHOOK_PORT=8443 \
     STT_GROQ_LANGUAGE=fa \
+    HERMES_UPSTREAM_STREAMING=false \
     HERMES_GATEWAY_NO_SUPERVISE=1 \
     HOME=/opt/data \
     PYTHONUNBUFFERED=1
