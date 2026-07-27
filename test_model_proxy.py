@@ -8,7 +8,7 @@ import pytest
 from openai import OpenAI
 
 import model_proxy
-from model_proxy import response_to_sse
+from model_proxy import request_for_model, response_to_sse
 
 
 def _events(body: bytes):
@@ -17,6 +17,36 @@ def _events(body: bytes):
         for line in body.decode("utf-8").splitlines()
         if line.startswith("data: ")
     ]
+
+
+def test_groq_attempt_removes_unsupported_reasoning_history_without_mutation():
+    source = {
+        "model": "hermes-free",
+        "messages": [
+            {"role": "user", "content": "سلام"},
+            {
+                "role": "assistant",
+                "content": "پاسخ",
+                "reasoning_details": [{"type": "summary", "text": "private"}],
+                "reasoning_content": "private",
+                "tool_calls": [{"id": "call_1"}],
+            },
+        ],
+        "stream": True,
+    }
+
+    groq = request_for_model(source, "groq/openai/gpt-oss-120b")
+    opencode = request_for_model(source, "oc/nemotron-3-ultra-free")
+
+    assert groq["model"] == "groq/openai/gpt-oss-120b"
+    assert groq["stream"] is False
+    assert groq["messages"][1] == {
+        "role": "assistant",
+        "content": "پاسخ",
+        "tool_calls": [{"id": "call_1"}],
+    }
+    assert "reasoning_details" in opencode["messages"][1]
+    assert "reasoning_details" in source["messages"][1]
 
 
 def test_response_to_sse_preserves_text_and_finish_reason():

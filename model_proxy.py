@@ -23,6 +23,13 @@ FALLBACK_MODELS_FILE = os.environ.get(
     "FALLBACK_MODELS_FILE", "/opt/data/9router/fallback-models.json"
 )
 COMBO_MODEL = os.environ.get("COMBO_MODEL", "hermes-free")
+GROQ_HISTORY_METADATA = {
+    "reasoning_details",
+    "reasoning_content",
+    "reasoning",
+    "thinking",
+    "thinking_blocks",
+}
 
 
 def load_fallback_models() -> list[str]:
@@ -36,6 +43,41 @@ def load_fallback_models() -> list[str]:
     ):
         raise ValueError("fallback model manifest is invalid")
     return [model.strip() for model in models]
+
+
+def request_for_model(
+    request_payload: dict[str, Any], model: str
+) -> dict[str, Any]:
+    """Build a provider-compatible attempt without mutating Hermes history.
+
+    Hermes preserves reasoning metadata returned by some OpenAI-compatible
+    providers. Groq rejects those non-standard properties when the same
+    conversation later falls back to one of its models. The metadata is not
+    needed to continue the visible conversation, so remove it only from the
+    Groq attempt while preserving content, tool calls, and the source payload.
+    """
+    attempt_payload = {**request_payload, "model": model, "stream": False}
+    if not model.startswith("groq/"):
+        return attempt_payload
+
+    messages = request_payload.get("messages")
+    if not isinstance(messages, list):
+        return attempt_payload
+
+    sanitized_messages = []
+    for message in messages:
+        if isinstance(message, dict):
+            sanitized_messages.append(
+                {
+                    key: value
+                    for key, value in message.items()
+                    if key not in GROQ_HISTORY_METADATA
+                }
+            )
+        else:
+            sanitized_messages.append(message)
+    attempt_payload["messages"] = sanitized_messages
+    return attempt_payload
 
 
 def choice_has_output(choice: dict[str, Any]) -> bool:
@@ -169,7 +211,7 @@ class Handler(BaseHTTPRequestHandler):
 
         failures: list[str] = []
         for position, model in enumerate(models, start=1):
-            attempt_payload = {**request_payload, "model": model, "stream": False}
+            attempt_payload = request_for_model(request_payload, model)
             attempt_body = json.dumps(
                 attempt_payload, ensure_ascii=False
             ).encode("utf-8")
