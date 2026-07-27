@@ -36,8 +36,30 @@ def test_long_tasks_and_context_have_defensive_settings():
     assert config["agent"]["intent_ack_continuation"] is True
     assert config["agent"]["api_max_retries"] == 1
     assert config["compression"]["in_place"] is True
-    assert config["compression"]["threshold_tokens"] == 36000
-    assert config["compression"]["proactive_prune_tokens"] == 24000
+    assert config["compression"]["threshold_tokens"] == 24000
+    assert config["compression"]["proactive_prune_tokens"] == 16000
+
+
+def test_telegram_only_loads_cloud_safe_useful_toolsets():
+    config = generated_config()
+    telegram_tools = set(config["platform_toolsets"]["telegram"])
+
+    assert config["agent"]["disabled_toolsets"] == ["kanban"]
+    assert {
+        "terminal",
+        "file",
+        "code_execution",
+        "skills",
+        "todo",
+        "memory",
+        "session_search",
+        "clarify",
+        "cronjob",
+        "no_mcp",
+    } == telegram_tools
+    assert telegram_tools.isdisjoint(
+        {"browser", "computer_use", "image_gen", "video_gen", "tts", "web"}
+    )
 
 
 def test_startup_fails_closed_on_backup_restore_errors():

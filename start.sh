@@ -105,10 +105,28 @@ model:
 agent:
   max_turns: 35
   api_max_retries: 1
+  disabled_toolsets:
+    - kanban
   intent_ack_continuation: true
   verbose: false
   reasoning_effort: medium
   image_input_mode: text
+# Keep Telegram focused on tools that are useful in this headless cloud
+# deployment. This avoids slow availability probes for desktop/browser/TTS
+# tools that can never succeed on Render. "no_mcp" also prevents unknown
+# bundled MCP integrations from silently adding schemas to every request.
+platform_toolsets:
+  telegram:
+    - terminal
+    - file
+    - code_execution
+    - skills
+    - todo
+    - memory
+    - session_search
+    - clarify
+    - cronjob
+    - no_mcp
 terminal:
   backend: local
   cwd: /opt/data/workspace
@@ -123,13 +141,13 @@ streaming:
 compression:
   enabled: true
   threshold: 0.35
-  threshold_tokens: 36000
-  target_ratio: 0.15
+  threshold_tokens: 24000
+  target_ratio: 0.12
   protect_last_n: 6
-  proactive_prune_tokens: 24000
-  proactive_prune_min_result_chars: 8000
-  proactive_prune_min_reclaim_tokens: 4096
-  idle_compact_after_seconds: 600
+  proactive_prune_tokens: 16000
+  proactive_prune_min_result_chars: 5000
+  proactive_prune_min_reclaim_tokens: 3072
+  idle_compact_after_seconds: 300
   in_place: true
 session_reset:
   mode: none
