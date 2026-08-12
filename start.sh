@@ -100,7 +100,7 @@ model:
   api_key: local-no-key-required
   api_mode: chat_completions
   context_length: 65536
-  max_tokens: 768
+  max_tokens: 1024
 agent:
   max_turns: 35
   api_max_retries: 1
@@ -116,10 +116,7 @@ agent:
 # bundled MCP integrations from silently adding schemas to every request.
 platform_toolsets:
   telegram:
-    - terminal
-    - file
     - memory
-    - clarify
     - cronjob
     - no_mcp
 terminal:

@@ -15,6 +15,7 @@ from model_proxy import (
     rate_limit_retry_seconds,
     request_for_model,
     response_to_sse,
+    tool_call_failed,
 )
 
 
@@ -69,9 +70,10 @@ def test_groq_attempt_caps_completion_and_compacts_tools():
         "max_tokens": 2048,
     }
 
-    attempt = request_for_model(source, "groq/llama-3.3-70b-versatile")
+    attempt = request_for_model(source, "groq/openai/gpt-oss-120b")
 
-    assert attempt["max_tokens"] == 512
+    assert attempt["max_tokens"] == 1024
+    assert attempt["reasoning_effort"] == "low"
     assert len(attempt["tools"][0]["function"]["description"]) == 240
     assert source["max_tokens"] == 2048
     assert len(source["tools"][0]["function"]["description"]) == 1000
@@ -136,6 +138,7 @@ def test_history_budget_keeps_system_and_recent_messages_and_trims_tool_output()
 
 
 def test_provider_failures_receive_useful_cooldowns():
+    assert model_cooldown_seconds(400) == 30
     assert model_cooldown_seconds(401) == 3600
     assert model_cooldown_seconds(429) == 15
     assert model_cooldown_seconds(502) == 300
@@ -147,6 +150,65 @@ def test_rate_limit_retry_delay_reads_json_message_and_header():
     assert rate_limit_retry_seconds([], body) == pytest.approx(5.1825)
     assert rate_limit_retry_seconds([("Retry-After", "3")], body) == 3
     assert rate_limit_retry_seconds([], b"try again later") is None
+
+
+def test_tool_call_failure_detection_is_specific():
+    assert tool_call_failed(400, b'{"code":"tool_use_failed"}') is True
+    assert tool_call_failed(400, b'{"message":"tool call validation failed"}') is True
+    assert tool_call_failed(429, b'{"code":"tool_use_failed"}') is False
+
+
+def test_direct_groq_request_strips_provider_prefix_and_uses_secret(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        @staticmethod
+        def getheaders():
+            return [("Content-Type", "application/json")]
+
+        @staticmethod
+        def read():
+            return b'{"choices":[]}'
+
+    class FakeConnection:
+        def __init__(self, host, timeout):
+            captured["host"] = host
+            captured["timeout"] = timeout
+
+        def request(self, method, path, body, headers):
+            captured.update(
+                method=method,
+                path=path,
+                payload=json.loads(body),
+                authorization=headers["Authorization"],
+            )
+
+        @staticmethod
+        def getresponse():
+            return FakeResponse()
+
+        @staticmethod
+        def close():
+            pass
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-secret")
+    monkeypatch.setattr(model_proxy.http.client, "HTTPSConnection", FakeConnection)
+    handler = object.__new__(model_proxy.Handler)
+    status, _headers, _body = handler._model_request(
+        "groq/openai/gpt-oss-120b",
+        "/v1/chat/completions",
+        json.dumps({"model": "groq/openai/gpt-oss-120b"}).encode(),
+        {},
+        20,
+    )
+
+    assert status == 200
+    assert captured["host"] == "api.groq.com"
+    assert captured["path"] == "/openai/v1/chat/completions"
+    assert captured["payload"]["model"] == "openai/gpt-oss-120b"
+    assert captured["authorization"] == "Bearer test-secret"
 
 
 def test_response_to_sse_preserves_text_and_finish_reason():
@@ -541,7 +603,7 @@ def test_combo_waits_for_short_rate_limit_then_retries_same_model(
         return 200, [], body
 
     manifest = tmp_path / "fallback-models.json"
-    manifest.write_text(json.dumps(["groq/test"]), encoding="utf-8")
+    manifest.write_text(json.dumps(["provider/test"]), encoding="utf-8")
     monkeypatch.setattr(model_proxy, "FALLBACK_MODELS_FILE", str(manifest))
     monkeypatch.setattr(model_proxy.Handler, "_router_request", fake_router_request)
     monkeypatch.setattr(model_proxy.time, "sleep", sleeps.append)
@@ -562,6 +624,74 @@ def test_combo_waits_for_short_rate_limit_then_retries_same_model(
         adapter.server_close()
 
     assert response.status_code == 200
-    assert attempts == ["groq/test", "groq/test"]
+    assert attempts == ["provider/test", "provider/test"]
     assert sleeps == [pytest.approx(0.76)]
     assert "بازیابی شد" in response.text
+
+
+def test_combo_repairs_one_invalid_tool_call_before_fallback(monkeypatch, tmp_path):
+    requests = []
+
+    def fake_router_request(
+        _self, _method, _path, raw_body, _headers, timeout=None
+    ):
+        request = json.loads(raw_body)
+        requests.append(request)
+        if len(requests) == 1:
+            return 400, [], b'{"error":{"code":"tool_use_failed"}}'
+        body = json.dumps(
+            {
+                "model": request["model"],
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "فراخوانی ابزار اصلاح شد",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ).encode()
+        return 200, [], body
+
+    manifest = tmp_path / "fallback-models.json"
+    manifest.write_text(json.dumps(["provider/tool-model"]), encoding="utf-8")
+    monkeypatch.setattr(model_proxy, "FALLBACK_MODELS_FILE", str(manifest))
+    monkeypatch.setattr(model_proxy.Handler, "_router_request", fake_router_request)
+    adapter = ThreadingHTTPServer(("127.0.0.1", 0), model_proxy.Handler)
+    threading.Thread(target=adapter.serve_forever, daemon=True).start()
+
+    try:
+        response = httpx.post(
+            f"http://127.0.0.1:{adapter.server_port}/v1/chat/completions",
+            json={
+                "model": "hermes-free",
+                "messages": [{"role": "user", "content": "کرون بساز"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "cronjob",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "stream": True,
+            },
+        )
+    finally:
+        adapter.shutdown()
+        adapter.server_close()
+
+    assert response.status_code == 200
+    assert len(requests) == 2
+    repair_messages = [
+        message
+        for message in requests[1]["messages"]
+        if message.get("role") == "system"
+        and "strict JSON" in message.get("content", "")
+    ]
+    assert len(repair_messages) == 1
+    assert "فراخوانی ابزار اصلاح شد" in response.text

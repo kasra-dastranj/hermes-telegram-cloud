@@ -26,7 +26,7 @@ OPENROUTER_ATTEMPT_TIMEOUT = int(
     os.environ.get("OPENROUTER_ATTEMPT_TIMEOUT", "45")
 )
 RATE_LIMIT_RETRIES = int(os.environ.get("RATE_LIMIT_RETRIES", "2"))
-RATE_LIMIT_MAX_WAIT = float(os.environ.get("RATE_LIMIT_MAX_WAIT", "20"))
+RATE_LIMIT_MAX_WAIT = float(os.environ.get("RATE_LIMIT_MAX_WAIT", "65"))
 MODEL_HISTORY_MAX_CHARS = int(os.environ.get("MODEL_HISTORY_MAX_CHARS", "24000"))
 GROQ_HISTORY_MAX_CHARS = int(os.environ.get("GROQ_HISTORY_MAX_CHARS", "9000"))
 FALLBACK_MODELS_FILE = os.environ.get(
@@ -42,6 +42,14 @@ GROQ_HISTORY_METADATA = {
 }
 MODEL_COOLDOWNS: dict[str, float] = {}
 MODEL_COOLDOWNS_LOCK = threading.Lock()
+DIRECT_PROVIDERS = {
+    "groq": ("api.groq.com", "/openai/v1/chat/completions", "GROQ_API_KEY"),
+    "openrouter": (
+        "openrouter.ai",
+        "/api/v1/chat/completions",
+        "OPENROUTER_API_KEY",
+    ),
+}
 
 
 def _compact_message(message: Any) -> Any:
@@ -115,7 +123,9 @@ def compact_tools(tools: Any) -> Any:
 
 
 def model_cooldown_seconds(status: int | None) -> int:
-    if status in {400, 401, 403, 404}:
+    if status == 400:
+        return 30
+    if status in {401, 403, 404}:
         return 3600
     if status == 429:
         return 15
@@ -154,6 +164,27 @@ def rate_limit_retry_seconds(
     elif unit.startswith("m"):
         delay *= 60
     return max(0.0, delay)
+
+
+def tool_call_failed(status: int, response_body: bytes) -> bool:
+    if status != 400:
+        return False
+    text = response_body.decode("utf-8", errors="ignore").lower()
+    return "tool_use_failed" in text or "tool call" in text
+
+
+def add_repair_instruction(
+    payload: dict[str, Any], instruction: str
+) -> dict[str, Any]:
+    repaired = dict(payload)
+    messages = [dict(message) for message in payload.get("messages", [])]
+    repair = {"role": "system", "content": instruction}
+    insert_at = 0
+    while insert_at < len(messages) and messages[insert_at].get("role") == "system":
+        insert_at += 1
+    messages.insert(insert_at, repair)
+    repaired["messages"] = messages
+    return repaired
 
 
 def model_is_cooling_down(model: str) -> bool:
@@ -228,11 +259,13 @@ def request_for_model(
         # prose and reserve a modest completion budget for each agent turn.
         if "tools" in attempt_payload:
             attempt_payload["tools"] = compact_tools(attempt_payload["tools"])
-        requested_max = attempt_payload.get("max_tokens", 512)
+        requested_max = attempt_payload.get("max_tokens", 1024)
         try:
-            attempt_payload["max_tokens"] = min(int(requested_max), 512)
+            attempt_payload["max_tokens"] = min(int(requested_max), 1024)
         except (TypeError, ValueError):
-            attempt_payload["max_tokens"] = 512
+            attempt_payload["max_tokens"] = 1024
+        if "gpt-oss" in model:
+            attempt_payload["reasoning_effort"] = "low"
     elif sanitized_messages is not None:
         requested_max = attempt_payload.get("max_tokens", 2048)
         try:
@@ -350,6 +383,51 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             connection.close()
 
+    def _model_request(
+        self,
+        model: str,
+        path: str,
+        raw_body: bytes,
+        headers: dict[str, str],
+        timeout: int,
+    ) -> tuple[int, list[tuple[str, str]], bytes]:
+        provider, separator, upstream_model = model.partition("/")
+        destination = DIRECT_PROVIDERS.get(provider)
+        if not separator or destination is None:
+            return self._router_request(
+                "POST", path, raw_body, headers, timeout=timeout
+            )
+
+        host, provider_path, key_env = destination
+        api_key = os.environ.get(key_env, "").strip()
+        if not api_key:
+            body = json.dumps(
+                {"error": {"message": f"Missing {key_env}"}}
+            ).encode()
+            return 503, [("Content-Type", "application/json")], body
+
+        provider_payload = json.loads(raw_body)
+        provider_payload["model"] = upstream_model
+        provider_body = json.dumps(
+            provider_payload, ensure_ascii=False
+        ).encode("utf-8")
+        provider_headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "hermes-text-gateway/1.0",
+            "Content-Length": str(len(provider_body)),
+        }
+        connection = http.client.HTTPSConnection(host, timeout=timeout)
+        try:
+            connection.request(
+                "POST", provider_path, body=provider_body, headers=provider_headers
+            )
+            response = connection.getresponse()
+            return response.status, response.getheaders(), response.read()
+        finally:
+            connection.close()
+
     def _send_json_error(self, status: int, message: str) -> None:
         body = json.dumps(
             {"error": {"message": message, "type": "model_proxy_error"}}
@@ -404,10 +482,12 @@ class Handler(BaseHTTPRequestHandler):
             response_body = b""
             status: int | None = None
             request_failed = False
-            for retry_index in range(RATE_LIMIT_RETRIES + 1):
+            rate_limit_retries = 0
+            tool_repair_used = False
+            while True:
                 try:
-                    status, response_headers, response_body = self._router_request(
-                        "POST",
+                    status, response_headers, response_body = self._model_request(
+                        model,
                         self.path,
                         attempt_body,
                         attempt_headers,
@@ -428,7 +508,28 @@ class Handler(BaseHTTPRequestHandler):
                     request_failed = True
                     break
 
-                if status != 429 or retry_index >= RATE_LIMIT_RETRIES:
+                if status == 400 and not tool_repair_used and tool_call_failed(
+                    status, response_body
+                ):
+                    tool_repair_used = True
+                    attempt_payload = add_repair_instruction(
+                        attempt_payload,
+                        "Your previous tool call was rejected. If a tool is needed, "
+                        "emit exactly one valid tool call whose arguments are strict "
+                        "JSON matching the supplied schema. Otherwise answer in text.",
+                    )
+                    attempt_body = json.dumps(
+                        attempt_payload, ensure_ascii=False
+                    ).encode("utf-8")
+                    attempt_headers["Content-Length"] = str(len(attempt_body))
+                    print(
+                        f"[model-proxy] {model} produced an invalid tool call; "
+                        "retrying once with JSON repair guidance",
+                        flush=True,
+                    )
+                    continue
+
+                if status != 429 or rate_limit_retries >= RATE_LIMIT_RETRIES:
                     break
                 retry_delay = rate_limit_retry_seconds(
                     response_headers, response_body
@@ -438,10 +539,11 @@ class Handler(BaseHTTPRequestHandler):
                 retry_delay = max(0.5, retry_delay + 0.75)
                 print(
                     f"[model-proxy] {model} rate-limited; retrying in "
-                    f"{retry_delay:.2f}s ({retry_index + 1}/{RATE_LIMIT_RETRIES})",
+                    f"{retry_delay:.2f}s ({rate_limit_retries + 1}/{RATE_LIMIT_RETRIES})",
                     flush=True,
                 )
                 time.sleep(retry_delay)
+                rate_limit_retries += 1
 
             if request_failed or status is None:
                 continue

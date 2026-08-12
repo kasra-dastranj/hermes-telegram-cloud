@@ -26,7 +26,7 @@ const secretProviders = [
     connectionName: "Hermes Groq Secret",
     models: [
       "openai/gpt-oss-120b",
-      "llama-3.3-70b-versatile",
+      "openai/gpt-oss-20b",
       "qwen/qwen3.6-27b",
     ],
   },
@@ -43,10 +43,8 @@ const comboId = "hermes-free-fallback";
 const comboName = "hermes-free";
 const preferredModelOrder = [
   "groq/openai/gpt-oss-120b",
-  "groq/llama-3.3-70b-versatile",
-  "oc/deepseek-v4-flash-free",
-  "oc/mimo-v2.5-free",
-  "oc/big-pickle",
+  "groq/openai/gpt-oss-20b",
+  "groq/qwen/qwen3.6-27b",
   "openrouter/openrouter/free",
 ];
 
@@ -210,7 +208,8 @@ function main() {
   fs.renameSync(temporaryManifest, fallbackManifestPath);
   console.log(
     `[startup] 9Router configured fallback combo "${comboName}" with ` +
-      `${comboModels.length} models across ${enabledProviders.length + 1} providers ` +
+      `${comboModels.length} text models across ` +
+      `${new Set(comboModels.map((model) => model.split("/", 1)[0])).size} providers ` +
       `without exposing its port or secrets.`
   );
 }

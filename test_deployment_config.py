@@ -38,11 +38,13 @@ def test_fallback_excludes_known_broken_or_stalling_models():
         "];", 1
     )[0]
 
-    assert "groq/llama-3.3-70b-versatile" in preferred
     assert "groq/openai/gpt-oss-120b" in preferred
+    assert "groq/openai/gpt-oss-20b" in preferred
+    assert "groq/qwen/qwen3.6-27b" in preferred
+    assert "groq/llama-3.3-70b-versatile" not in preferred
+    assert "oc/deepseek-v4-flash-free" not in preferred
     assert "oc/nemotron-3-ultra-free" not in preferred
     assert "oc/north-mini-code-free" not in preferred
-    assert "groq/qwen/qwen3.6-27b" not in preferred
 
 
 def test_long_tasks_and_context_have_defensive_settings():
@@ -52,7 +54,7 @@ def test_long_tasks_and_context_have_defensive_settings():
     assert config["agent"]["api_max_retries"] == 1
     assert config["compression"]["in_place"] is True
     assert config["model"]["context_length"] == 65536
-    assert config["model"]["max_tokens"] == 768
+    assert config["model"]["max_tokens"] == 1024
     assert config["compression"]["threshold_tokens"] == 8000
     assert config["compression"]["proactive_prune_tokens"] == 6000
     assert config["stt"]["language"] == "fa"
@@ -64,14 +66,7 @@ def test_telegram_only_loads_cloud_safe_useful_toolsets():
     telegram_tools = set(config["platform_toolsets"]["telegram"])
 
     assert config["agent"]["disabled_toolsets"] == ["kanban"]
-    assert {
-        "terminal",
-        "file",
-        "memory",
-        "clarify",
-        "cronjob",
-        "no_mcp",
-    } == telegram_tools
+    assert {"memory", "cronjob", "no_mcp"} == telegram_tools
     assert telegram_tools.isdisjoint(
         {"browser", "computer_use", "image_gen", "video_gen", "tts", "web"}
     )
