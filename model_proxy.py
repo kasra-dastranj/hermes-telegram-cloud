@@ -43,6 +43,11 @@ GROQ_HISTORY_METADATA = {
 MODEL_COOLDOWNS: dict[str, float] = {}
 MODEL_COOLDOWNS_LOCK = threading.Lock()
 DIRECT_PROVIDERS = {
+    "gorouter": (
+        "gorouter.app",
+        "/v1/chat/completions",
+        "GOROUTER_API_KEY",
+    ),
     "groq": ("api.groq.com", "/openai/v1/chat/completions", "GROQ_API_KEY"),
     "openrouter": (
         "openrouter.ai",
@@ -273,6 +278,12 @@ def request_for_model(
         except (TypeError, ValueError):
             attempt_payload["max_tokens"] = 2048
 
+    # GoRouter exposes a separate "-thinking" model ID. Do not forward
+    # Hermes' generic reasoning hint to the normal Claude route, otherwise a
+    # short everyday turn can unexpectedly consume thousands of hidden tokens.
+    if model.startswith("gorouter/"):
+        attempt_payload.pop("reasoning_effort", None)
+
     if sanitized_messages is not None:
         attempt_payload["messages"] = sanitized_messages
     return attempt_payload
@@ -415,7 +426,14 @@ class Handler(BaseHTTPRequestHandler):
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "hermes-text-gateway/1.0",
+            # GoRouter's edge currently rejects non-browser user agents with
+            # HTTP 403 even when the API key is valid. Scope the compatibility
+            # header to that provider; keep an explicit agent identity for the
+            # other APIs.
+            "User-Agent": (
+                "Mozilla/5.0" if provider == "gorouter"
+                else "hermes-text-gateway/1.0"
+            ),
             "Content-Length": str(len(provider_body)),
         }
         connection = http.client.HTTPSConnection(host, timeout=timeout)

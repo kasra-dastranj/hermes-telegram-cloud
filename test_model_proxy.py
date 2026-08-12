@@ -183,6 +183,7 @@ def test_direct_groq_request_strips_provider_prefix_and_uses_secret(monkeypatch)
                 path=path,
                 payload=json.loads(body),
                 authorization=headers["Authorization"],
+                user_agent=headers["User-Agent"],
             )
 
         @staticmethod
@@ -209,6 +210,76 @@ def test_direct_groq_request_strips_provider_prefix_and_uses_secret(monkeypatch)
     assert captured["path"] == "/openai/v1/chat/completions"
     assert captured["payload"]["model"] == "openai/gpt-oss-120b"
     assert captured["authorization"] == "Bearer test-secret"
+    assert captured["user_agent"] == "hermes-text-gateway/1.0"
+
+
+def test_direct_gorouter_request_uses_normal_claude_route(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        @staticmethod
+        def getheaders():
+            return [("Content-Type", "application/json")]
+
+        @staticmethod
+        def read():
+            return b'{"choices":[]}'
+
+    class FakeConnection:
+        def __init__(self, host, timeout):
+            captured["host"] = host
+            captured["timeout"] = timeout
+
+        def request(self, method, path, body, headers):
+            captured.update(
+                method=method,
+                path=path,
+                payload=json.loads(body),
+                authorization=headers["Authorization"],
+                user_agent=headers["User-Agent"],
+            )
+
+        @staticmethod
+        def getresponse():
+            return FakeResponse()
+
+        @staticmethod
+        def close():
+            pass
+
+    monkeypatch.setenv("GOROUTER_API_KEY", "test-gorouter-secret")
+    monkeypatch.setattr(model_proxy.http.client, "HTTPSConnection", FakeConnection)
+    handler = object.__new__(model_proxy.Handler)
+    status, _headers, _body = handler._model_request(
+        "gorouter/claude-opus-5",
+        "/v1/chat/completions",
+        json.dumps({"model": "gorouter/claude-opus-5"}).encode(),
+        {},
+        20,
+    )
+
+    assert status == 200
+    assert captured["host"] == "gorouter.app"
+    assert captured["path"] == "/v1/chat/completions"
+    assert captured["payload"]["model"] == "claude-opus-5"
+    assert captured["authorization"] == "Bearer test-gorouter-secret"
+    assert captured["user_agent"] == "Mozilla/5.0"
+
+
+def test_gorouter_normal_model_drops_generic_reasoning_hint():
+    source = {
+        "model": "hermes-free",
+        "messages": [{"role": "user", "content": "سلام"}],
+        "reasoning_effort": "medium",
+        "max_tokens": 1024,
+    }
+
+    attempt = request_for_model(source, "gorouter/claude-opus-5")
+
+    assert "reasoning_effort" not in attempt
+    assert attempt["max_tokens"] == 1024
 
 
 def test_response_to_sse_preserves_text_and_finish_reason():

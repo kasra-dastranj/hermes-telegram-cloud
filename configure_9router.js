@@ -20,6 +20,13 @@ const openCodeModels = [
 
 const secretProviders = [
   {
+    provider: "gorouter",
+    envName: "GOROUTER_API_KEY",
+    connectionId: "hermes-managed-gorouter",
+    connectionName: "Hermes GoRouter Secret",
+    models: ["claude-opus-5"],
+  },
+  {
     provider: "groq",
     envName: "GROQ_API_KEY",
     connectionId: "hermes-managed-groq",
@@ -42,6 +49,7 @@ const secretProviders = [
 const comboId = "hermes-free-fallback";
 const comboName = "hermes-free";
 const preferredModelOrder = [
+  "gorouter/claude-opus-5",
   "groq/openai/gpt-oss-120b",
   "groq/openai/gpt-oss-20b",
   "groq/qwen/qwen3.6-27b",

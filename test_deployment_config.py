@@ -38,6 +38,10 @@ def test_fallback_excludes_known_broken_or_stalling_models():
         "];", 1
     )[0]
 
+    assert preferred.index('"gorouter/claude-opus-5"') < preferred.index(
+        '"groq/openai/gpt-oss-120b"'
+    )
+    assert "gorouter/claude-opus-5-thinking" not in preferred
     assert "groq/openai/gpt-oss-120b" in preferred
     assert "groq/openai/gpt-oss-20b" in preferred
     assert "groq/qwen/qwen3.6-27b" in preferred
