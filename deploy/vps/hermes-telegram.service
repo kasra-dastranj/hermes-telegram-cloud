@@ -1,0 +1,48 @@
+[Unit]
+Description=Hermes Telegram agent (isolated Podman container)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+Environment=PODMAN_SYSTEMD_UNIT=%n
+# The image is built on GitHub Actions, so this one-core host never builds it.
+ExecStartPre=-/usr/bin/podman rm --force hermes-telegram
+ExecStart=/usr/bin/podman run --name hermes-telegram \
+  --env-file /etc/hermes-telegram/hermes.env \
+  --publish 127.0.0.1:10000:7860 \
+  --volume /var/lib/hermes-telegram:/opt/data:Z \
+  --memory 900m \
+  --memory-reservation 650m \
+  --memory-swap 1536m \
+  --cpus 0.50 \
+  --pids-limit 512 \
+  --log-opt max-size=10mb \
+  --health-cmd "curl -fsS http://127.0.0.1:7860/health || exit 1" \
+  --health-interval 30s \
+  --health-timeout 5s \
+  --health-retries 4 \
+  ghcr.io/kasra-dastranj/hermes-telegram-cloud:latest
+ExecStop=/usr/bin/podman stop --time 35 hermes-telegram
+ExecStopPost=-/usr/bin/podman rm --force hermes-telegram
+
+Restart=on-failure
+RestartSec=20
+TimeoutStartSec=240
+TimeoutStopSec=50
+KillMode=mixed
+
+# Host-level cgroup limits are a second safety net around Podman's limits.
+CPUQuota=50%
+MemoryHigh=700M
+MemoryMax=950M
+MemorySwapMax=1536M
+OOMPolicy=stop
+Nice=10
+IOWeight=20
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target
