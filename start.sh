@@ -100,8 +100,8 @@ model:
   base_url: http://127.0.0.1:20129/v1
   api_key: local-no-key-required
   api_mode: chat_completions
-  context_length: 131072
-  max_tokens: 8192
+  context_length: 32768
+  max_tokens: 2048
 agent:
   max_turns: 35
   api_max_retries: 1
@@ -141,10 +141,10 @@ streaming:
 compression:
   enabled: true
   threshold: 0.35
-  threshold_tokens: 24000
-  target_ratio: 0.12
+  threshold_tokens: 8000
+  target_ratio: 0.18
   protect_last_n: 6
-  proactive_prune_tokens: 16000
+  proactive_prune_tokens: 6000
   proactive_prune_min_result_chars: 5000
   proactive_prune_min_reclaim_tokens: 3072
   idle_compact_after_seconds: 300

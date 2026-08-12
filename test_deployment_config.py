@@ -30,14 +30,29 @@ def test_gateway_and_model_transport_are_deliberately_separate():
     )
 
 
+def test_fallback_excludes_known_broken_or_stalling_models():
+    source = (ROOT / "configure_9router.js").read_text(encoding="utf-8")
+    preferred = source.split("const preferredModelOrder = [", 1)[1].split(
+        "];", 1
+    )[0]
+
+    assert "groq/llama-3.3-70b-versatile" in preferred
+    assert "groq/openai/gpt-oss-120b" in preferred
+    assert "oc/nemotron-3-ultra-free" not in preferred
+    assert "oc/north-mini-code-free" not in preferred
+    assert "groq/qwen/qwen3.6-27b" not in preferred
+
+
 def test_long_tasks_and_context_have_defensive_settings():
     config = generated_config()
 
     assert config["agent"]["intent_ack_continuation"] is True
     assert config["agent"]["api_max_retries"] == 1
     assert config["compression"]["in_place"] is True
-    assert config["compression"]["threshold_tokens"] == 24000
-    assert config["compression"]["proactive_prune_tokens"] == 16000
+    assert config["model"]["context_length"] == 32768
+    assert config["model"]["max_tokens"] == 2048
+    assert config["compression"]["threshold_tokens"] == 8000
+    assert config["compression"]["proactive_prune_tokens"] == 6000
 
 
 def test_telegram_only_loads_cloud_safe_useful_toolsets():

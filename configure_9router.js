@@ -42,12 +42,9 @@ const secretProviders = [
 const comboId = "hermes-free-fallback";
 const comboName = "hermes-free";
 const preferredModelOrder = [
-  "oc/nemotron-3-ultra-free",
-  "groq/openai/gpt-oss-120b",
-  "oc/north-mini-code-free",
   "groq/llama-3.3-70b-versatile",
+  "groq/openai/gpt-oss-120b",
   "oc/deepseek-v4-flash-free",
-  "groq/qwen/qwen3.6-27b",
   "oc/mimo-v2.5-free",
   "oc/big-pickle",
   "openrouter/openrouter/free",
@@ -155,10 +152,11 @@ function configureDatabase(enabledProviders) {
     }
 
     const registeredSet = new Set(registeredModels);
-    const comboModels = [
-      ...preferredModelOrder.filter((model) => registeredSet.has(model)),
-      ...registeredModels.filter((model) => !preferredModelOrder.includes(model)),
-    ];
+    // Only include models that have proved compatible with Hermes tool calls.
+    // Registered-but-omitted models remain visible in 9Router for manual use.
+    const comboModels = preferredModelOrder.filter((model) =>
+      registeredSet.has(model)
+    );
 
     const now = new Date().toISOString();
     db.prepare(

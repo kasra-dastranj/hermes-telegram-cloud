@@ -12,13 +12,17 @@ import http.client
 import json
 import os
 import socket
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 
 LISTEN_PORT = int(os.environ.get("MODEL_PROXY_PORT", "20129"))
 ROUTER_PORT = int(os.environ.get("ROUTER_PORT", "20128"))
-MODEL_ATTEMPT_TIMEOUT = int(os.environ.get("MODEL_ATTEMPT_TIMEOUT", "90"))
+MODEL_ATTEMPT_TIMEOUT = int(os.environ.get("MODEL_ATTEMPT_TIMEOUT", "20"))
+MODEL_HISTORY_MAX_CHARS = int(os.environ.get("MODEL_HISTORY_MAX_CHARS", "24000"))
+GROQ_HISTORY_MAX_CHARS = int(os.environ.get("GROQ_HISTORY_MAX_CHARS", "12000"))
 FALLBACK_MODELS_FILE = os.environ.get(
     "FALLBACK_MODELS_FILE", "/opt/data/9router/fallback-models.json"
 )
@@ -30,6 +34,81 @@ GROQ_HISTORY_METADATA = {
     "thinking",
     "thinking_blocks",
 }
+MODEL_COOLDOWNS: dict[str, float] = {}
+MODEL_COOLDOWNS_LOCK = threading.Lock()
+
+
+def _compact_message(message: Any) -> Any:
+    """Bound giant tool/terminal output while retaining its useful edges."""
+    if not isinstance(message, dict):
+        return message
+    compacted = dict(message)
+    content = compacted.get("content")
+    limit = 4000 if compacted.get("role") == "tool" else 10000
+    if isinstance(content, str) and len(content) > limit:
+        edge = max(1, (limit - 120) // 2)
+        compacted["content"] = (
+            content[:edge]
+            + "\n...[older oversized content trimmed by gateway]...\n"
+            + content[-edge:]
+        )
+    return compacted
+
+
+def bounded_messages(messages: list[Any], max_chars: int) -> list[Any]:
+    """Keep system instructions and the newest coherent history within a budget."""
+    compacted = [_compact_message(message) for message in messages]
+    system = [
+        message
+        for message in compacted
+        if isinstance(message, dict) and message.get("role") == "system"
+    ]
+    conversation = [message for message in compacted if message not in system]
+    used = len(json.dumps(system, ensure_ascii=False, default=str))
+    selected: list[Any] = []
+    for message in reversed(conversation):
+        cost = len(json.dumps(message, ensure_ascii=False, default=str))
+        if selected and used + cost > max_chars:
+            break
+        selected.append(message)
+        used += cost
+    selected.reverse()
+    while (
+        selected
+        and isinstance(selected[0], dict)
+        and selected[0].get("role") == "tool"
+    ):
+        selected.pop(0)
+    return system + selected
+
+
+def model_cooldown_seconds(status: int | None) -> int:
+    if status in {400, 401, 403, 404}:
+        return 3600
+    if status == 429:
+        return 120
+    if status == 413:
+        return 30
+    if status is None or status >= 500:
+        return 300
+    return 0
+
+
+def model_is_cooling_down(model: str) -> bool:
+    with MODEL_COOLDOWNS_LOCK:
+        expires = MODEL_COOLDOWNS.get(model, 0)
+        if expires <= time.monotonic():
+            MODEL_COOLDOWNS.pop(model, None)
+            return False
+        return True
+
+
+def cool_down_model(model: str, status: int | None) -> None:
+    seconds = model_cooldown_seconds(status)
+    if not seconds:
+        return
+    with MODEL_COOLDOWNS_LOCK:
+        MODEL_COOLDOWNS[model] = time.monotonic() + seconds
 
 
 def load_fallback_models() -> list[str]:
@@ -57,26 +136,44 @@ def request_for_model(
     Groq attempt while preserving content, tool calls, and the source payload.
     """
     attempt_payload = {**request_payload, "model": model, "stream": False}
-    if not model.startswith("groq/"):
-        return attempt_payload
-
     messages = request_payload.get("messages")
-    if not isinstance(messages, list):
-        return attempt_payload
+    if isinstance(messages, list):
+        budget = (
+            GROQ_HISTORY_MAX_CHARS
+            if model.startswith("groq/")
+            else MODEL_HISTORY_MAX_CHARS
+        )
+        sanitized_messages = bounded_messages(messages, budget)
+    else:
+        sanitized_messages = None
 
-    sanitized_messages = []
-    for message in messages:
-        if isinstance(message, dict):
-            sanitized_messages.append(
+    if model.startswith("groq/") and sanitized_messages is not None:
+        sanitized_messages = [
+            (
                 {
                     key: value
                     for key, value in message.items()
                     if key not in GROQ_HISTORY_METADATA
                 }
+                if isinstance(message, dict)
+                else message
             )
-        else:
-            sanitized_messages.append(message)
-    attempt_payload["messages"] = sanitized_messages
+            for message in sanitized_messages
+        ]
+        requested_max = attempt_payload.get("max_tokens", 1024)
+        try:
+            attempt_payload["max_tokens"] = min(int(requested_max), 1024)
+        except (TypeError, ValueError):
+            attempt_payload["max_tokens"] = 1024
+    elif sanitized_messages is not None:
+        requested_max = attempt_payload.get("max_tokens", 2048)
+        try:
+            attempt_payload["max_tokens"] = min(int(requested_max), 2048)
+        except (TypeError, ValueError):
+            attempt_payload["max_tokens"] = 2048
+
+    if sanitized_messages is not None:
+        attempt_payload["messages"] = sanitized_messages
     return attempt_payload
 
 
@@ -211,6 +308,13 @@ class Handler(BaseHTTPRequestHandler):
 
         failures: list[str] = []
         for position, model in enumerate(models, start=1):
+            if model_is_cooling_down(model):
+                failures.append(f"{model}: cooling down")
+                print(
+                    f"[model-proxy] Skipping cooling-down model: {model}",
+                    flush=True,
+                )
+                continue
             attempt_payload = request_for_model(request_payload, model)
             attempt_body = json.dumps(
                 attempt_payload, ensure_ascii=False
@@ -230,6 +334,7 @@ class Handler(BaseHTTPRequestHandler):
             except (ConnectionError, OSError, TimeoutError, socket.timeout,
                     http.client.HTTPException) as error:
                 failures.append(f"{model}: {type(error).__name__}")
+                cool_down_model(model, None)
                 print(
                     f"[model-proxy] Model {model} failed: {type(error).__name__}",
                     flush=True,
@@ -248,10 +353,13 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     continue
                 print(f"[model-proxy] Selected fallback model: {model}", flush=True)
+                with MODEL_COOLDOWNS_LOCK:
+                    MODEL_COOLDOWNS.pop(model, None)
                 self._send_stream(status, stream_body)
                 return
 
             failures.append(f"{model}: HTTP {status}")
+            cool_down_model(model, status)
             print(
                 f"[model-proxy] Model {model} failed with HTTP {status}",
                 flush=True,

@@ -8,7 +8,12 @@ import pytest
 from openai import OpenAI
 
 import model_proxy
-from model_proxy import request_for_model, response_to_sse
+from model_proxy import (
+    bounded_messages,
+    model_cooldown_seconds,
+    request_for_model,
+    response_to_sse,
+)
 
 
 def _events(body: bytes):
@@ -47,6 +52,33 @@ def test_groq_attempt_removes_unsupported_reasoning_history_without_mutation():
     }
     assert "reasoning_details" in opencode["messages"][1]
     assert "reasoning_details" in source["messages"][1]
+
+
+def test_history_budget_keeps_system_and_recent_messages_and_trims_tool_output():
+    messages = [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "old" * 3000},
+        {"role": "assistant", "content": "working"},
+        {"role": "tool", "content": "x" * 12000},
+        {"role": "assistant", "content": "done"},
+        {"role": "user", "content": "latest"},
+    ]
+
+    bounded = bounded_messages(messages, 7000)
+
+    assert bounded[0] == {"role": "system", "content": "rules"}
+    assert bounded[-1] == {"role": "user", "content": "latest"}
+    assert all(message.get("content") != "old" * 3000 for message in bounded)
+    tool_messages = [message for message in bounded if message.get("role") == "tool"]
+    if tool_messages:
+        assert "oversized content trimmed" in tool_messages[0]["content"]
+
+
+def test_provider_failures_receive_useful_cooldowns():
+    assert model_cooldown_seconds(401) == 3600
+    assert model_cooldown_seconds(429) == 120
+    assert model_cooldown_seconds(502) == 300
+    assert model_cooldown_seconds(None) == 300
 
 
 def test_response_to_sse_preserves_text_and_finish_reason():
