@@ -1,6 +1,28 @@
 import front_proxy
 
 
+def test_configured_webhook_path_preserves_namespace():
+    assert (
+        front_proxy.configured_webhook_path(
+            "https://example.test/hermes/telegram"
+        )
+        == "/hermes/telegram"
+    )
+
+
+def test_configured_webhook_path_defaults_to_telegram():
+    assert front_proxy.configured_webhook_path("") == "/telegram"
+
+
+def test_namespaced_health_path_maps_to_local_health():
+    assert (
+        front_proxy.local_public_path(
+            "/hermes/health", "/hermes/telegram"
+        )
+        == "/health"
+    )
+
+
 def test_component_health_requires_every_internal_service(monkeypatch):
     ready_ports = {
         front_proxy.HERMES_PORT,

@@ -7,12 +7,34 @@ import json
 import os
 import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 
 PUBLIC_PORT = int(os.environ.get("PUBLIC_PORT", "7860"))
 HERMES_PORT = int(os.environ.get("TELEGRAM_WEBHOOK_PORT", "8443"))
 ROUTER_PORT = int(os.environ.get("ROUTER_PORT", "20128"))
 MODEL_PROXY_PORT = int(os.environ.get("MODEL_PROXY_PORT", "20129"))
+
+
+def configured_webhook_path(webhook_url: str) -> str:
+    """Return the route Hermes registers for its Telegram webhook."""
+    path = urlsplit(webhook_url).path.rstrip("/")
+    return path if path.startswith("/") and path else "/telegram"
+
+
+WEBHOOK_PATH = configured_webhook_path(
+    os.environ.get("TELEGRAM_WEBHOOK_URL", "")
+)
+
+
+def local_public_path(path: str, webhook_path: str = WEBHOOK_PATH) -> str:
+    """Map an externally namespaced health/root path to the local endpoint."""
+    webhook_prefix = webhook_path.rsplit("/", 1)[0]
+    if webhook_prefix and (
+        path == webhook_prefix or path.startswith(f"{webhook_prefix}/")
+    ):
+        return path[len(webhook_prefix) :] or "/"
+    return path
 
 
 def port_ready(port: int, timeout: float = 1.5) -> bool:
@@ -43,7 +65,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
-        path = self.path.split("?", 1)[0]
+        path = local_public_path(self.path.split("?", 1)[0])
         if path == "/":
             self._send_json(
                 200,
@@ -72,7 +94,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(404, {"ok": False, "error": "not_found"})
 
     def do_HEAD(self) -> None:  # noqa: N802
-        path = self.path.split("?", 1)[0]
+        path = local_public_path(self.path.split("?", 1)[0])
         if path in ("/", "/health"):
             healthy = path == "/" or all(component_health().values())
             self.send_response(200 if healthy else 503)
@@ -85,7 +107,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path.split("?", 1)[0] != "/telegram":
+        request_path = self.path.split("?", 1)[0]
+        if request_path not in {"/telegram", WEBHOOK_PATH}:
             self._send_json(404, {"ok": False, "error": "not_found"})
             return
 
@@ -100,7 +123,7 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             connection = http.client.HTTPConnection("127.0.0.1", HERMES_PORT, timeout=30)
-            connection.request("POST", "/telegram", body=body, headers=forwarded_headers)
+            connection.request("POST", WEBHOOK_PATH, body=body, headers=forwarded_headers)
             response = connection.getresponse()
             response_body = response.read()
             self.send_response(response.status)
@@ -127,7 +150,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     print(
         f"[proxy] Listening on 0.0.0.0:{PUBLIC_PORT}; "
-        f"forwarding /telegram to 127.0.0.1:{HERMES_PORT}",
+        f"forwarding {WEBHOOK_PATH} to 127.0.0.1:{HERMES_PORT}",
         flush=True,
     )
     ThreadingHTTPServer(("0.0.0.0", PUBLIC_PORT), Handler).serve_forever()
