@@ -12,6 +12,8 @@ Environment=PODMAN_SYSTEMD_UNIT=%n
 ExecStartPre=-/usr/bin/podman rm --force hermes-telegram
 ExecStart=/usr/bin/podman run --name hermes-telegram \
   --env-file /etc/hermes-telegram/hermes.env \
+  --env BACKUP_INTERVAL_SECONDS=21600 \
+  --env BACKUP_INITIAL_DELAY_SECONDS=600 \
   --publish 127.0.0.1:10000:7860 \
   --volume /var/lib/hermes-telegram:/opt/data:Z \
   --memory 900m \
