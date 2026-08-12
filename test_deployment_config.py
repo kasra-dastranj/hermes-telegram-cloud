@@ -66,7 +66,14 @@ def test_telegram_only_loads_cloud_safe_useful_toolsets():
     telegram_tools = set(config["platform_toolsets"]["telegram"])
 
     assert config["agent"]["disabled_toolsets"] == ["kanban"]
-    assert {"memory", "cronjob", "no_mcp"} == telegram_tools
+    assert {
+        "terminal",
+        "file",
+        "memory",
+        "clarify",
+        "cronjob",
+        "no_mcp",
+    } == telegram_tools
     assert telegram_tools.isdisjoint(
         {"browser", "computer_use", "image_gen", "video_gen", "tts", "web"}
     )

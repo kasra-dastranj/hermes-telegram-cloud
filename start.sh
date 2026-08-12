@@ -110,13 +110,16 @@ agent:
   verbose: false
   reasoning_effort: medium
   image_input_mode: text
-# Keep Telegram focused on tools that are useful in this headless cloud
-# deployment. This avoids slow availability probes for desktop/browser/TTS
-# tools that can never succeed on Render. "no_mcp" also prevents unknown
-# bundled MCP integrations from silently adding schemas to every request.
+# Keep the normal Hermes agent tools available in Telegram. These let Hermes
+# inspect and maintain its workspace, persist knowledge, ask structured
+# follow-up questions, and create cron jobs. Desktop-only tools remain absent,
+# while "no_mcp" prevents unknown integrations from adding schemas.
 platform_toolsets:
   telegram:
+    - terminal
+    - file
     - memory
+    - clarify
     - cronjob
     - no_mcp
 terminal:
