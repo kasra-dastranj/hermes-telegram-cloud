@@ -11,6 +11,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import socket
 import threading
 import time
@@ -24,6 +25,8 @@ MODEL_ATTEMPT_TIMEOUT = int(os.environ.get("MODEL_ATTEMPT_TIMEOUT", "20"))
 OPENROUTER_ATTEMPT_TIMEOUT = int(
     os.environ.get("OPENROUTER_ATTEMPT_TIMEOUT", "45")
 )
+RATE_LIMIT_RETRIES = int(os.environ.get("RATE_LIMIT_RETRIES", "2"))
+RATE_LIMIT_MAX_WAIT = float(os.environ.get("RATE_LIMIT_MAX_WAIT", "20"))
 MODEL_HISTORY_MAX_CHARS = int(os.environ.get("MODEL_HISTORY_MAX_CHARS", "24000"))
 GROQ_HISTORY_MAX_CHARS = int(os.environ.get("GROQ_HISTORY_MAX_CHARS", "9000"))
 FALLBACK_MODELS_FILE = os.environ.get(
@@ -115,12 +118,42 @@ def model_cooldown_seconds(status: int | None) -> int:
     if status in {400, 401, 403, 404}:
         return 3600
     if status == 429:
-        return 120
+        return 15
     if status == 413:
         return 30
     if status is None or status >= 500:
         return 300
     return 0
+
+
+def rate_limit_retry_seconds(
+    response_headers: list[tuple[str, str]], response_body: bytes
+) -> float | None:
+    """Read a short provider-directed retry delay from headers or JSON text."""
+    for key, value in response_headers:
+        if key.lower() != "retry-after":
+            continue
+        try:
+            delay = float(value)
+        except (TypeError, ValueError):
+            break
+        return max(0.0, delay)
+
+    text = response_body.decode("utf-8", errors="ignore")
+    match = re.search(
+        r"(?:try again in|retry after)\s*([0-9]+(?:\.[0-9]+)?)\s*(ms|s|sec|seconds?|m|min|minutes?)?",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    delay = float(match.group(1))
+    unit = (match.group(2) or "s").lower()
+    if unit == "ms":
+        delay /= 1000
+    elif unit.startswith("m"):
+        delay *= 60
+    return max(0.0, delay)
 
 
 def model_is_cooling_down(model: str) -> bool:
@@ -367,26 +400,50 @@ class Handler(BaseHTTPRequestHandler):
                 f"[model-proxy] Trying fallback model {position}/{len(models)}: {model}",
                 flush=True,
             )
-            try:
-                status, _headers, response_body = self._router_request(
-                    "POST",
-                    self.path,
-                    attempt_body,
-                    attempt_headers,
-                    timeout=(
-                        OPENROUTER_ATTEMPT_TIMEOUT
-                        if model.startswith("openrouter/")
-                        else MODEL_ATTEMPT_TIMEOUT
-                    ),
+            response_headers: list[tuple[str, str]] = []
+            response_body = b""
+            status: int | None = None
+            request_failed = False
+            for retry_index in range(RATE_LIMIT_RETRIES + 1):
+                try:
+                    status, response_headers, response_body = self._router_request(
+                        "POST",
+                        self.path,
+                        attempt_body,
+                        attempt_headers,
+                        timeout=(
+                            OPENROUTER_ATTEMPT_TIMEOUT
+                            if model.startswith("openrouter/")
+                            else MODEL_ATTEMPT_TIMEOUT
+                        ),
+                    )
+                except (ConnectionError, OSError, TimeoutError, socket.timeout,
+                        http.client.HTTPException) as error:
+                    failures.append(f"{model}: {type(error).__name__}")
+                    cool_down_model(model, None)
+                    print(
+                        f"[model-proxy] Model {model} failed: {type(error).__name__}",
+                        flush=True,
+                    )
+                    request_failed = True
+                    break
+
+                if status != 429 or retry_index >= RATE_LIMIT_RETRIES:
+                    break
+                retry_delay = rate_limit_retry_seconds(
+                    response_headers, response_body
                 )
-            except (ConnectionError, OSError, TimeoutError, socket.timeout,
-                    http.client.HTTPException) as error:
-                failures.append(f"{model}: {type(error).__name__}")
-                cool_down_model(model, None)
+                if retry_delay is None or retry_delay > RATE_LIMIT_MAX_WAIT:
+                    break
+                retry_delay = max(0.5, retry_delay + 0.75)
                 print(
-                    f"[model-proxy] Model {model} failed: {type(error).__name__}",
+                    f"[model-proxy] {model} rate-limited; retrying in "
+                    f"{retry_delay:.2f}s ({retry_index + 1}/{RATE_LIMIT_RETRIES})",
                     flush=True,
                 )
+                time.sleep(retry_delay)
+
+            if request_failed or status is None:
                 continue
 
             if 200 <= status < 300:

@@ -12,6 +12,7 @@ from model_proxy import (
     bounded_messages,
     compact_tools,
     model_cooldown_seconds,
+    rate_limit_retry_seconds,
     request_for_model,
     response_to_sse,
 )
@@ -136,9 +137,16 @@ def test_history_budget_keeps_system_and_recent_messages_and_trims_tool_output()
 
 def test_provider_failures_receive_useful_cooldowns():
     assert model_cooldown_seconds(401) == 3600
-    assert model_cooldown_seconds(429) == 120
+    assert model_cooldown_seconds(429) == 15
     assert model_cooldown_seconds(502) == 300
     assert model_cooldown_seconds(None) == 300
+
+
+def test_rate_limit_retry_delay_reads_json_message_and_header():
+    body = b'{"error":{"message":"Please try again in 5.1825s"}}'
+    assert rate_limit_retry_seconds([], body) == pytest.approx(5.1825)
+    assert rate_limit_retry_seconds([("Retry-After", "3")], body) == 3
+    assert rate_limit_retry_seconds([], b"try again later") is None
 
 
 def test_response_to_sse_preserves_text_and_finish_reason():
@@ -499,3 +507,61 @@ def test_combo_falls_through_timeout_to_next_model(monkeypatch, tmp_path):
     assert response.status_code == 200
     assert attempted_models == ["provider/timeout", "provider/working"]
     assert "بازیابی پس از timeout" in response.text
+
+
+def test_combo_waits_for_short_rate_limit_then_retries_same_model(
+    monkeypatch, tmp_path
+):
+    attempts = []
+    sleeps = []
+
+    def fake_router_request(
+        _self, _method, _path, raw_body, _headers, timeout=None
+    ):
+        model = json.loads(raw_body)["model"]
+        attempts.append(model)
+        if len(attempts) == 1:
+            return (
+                429,
+                [],
+                b'{"error":{"message":"Please try again in 0.01s"}}',
+            )
+        body = json.dumps(
+            {
+                "model": model,
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "بازیابی شد"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ).encode()
+        return 200, [], body
+
+    manifest = tmp_path / "fallback-models.json"
+    manifest.write_text(json.dumps(["groq/test"]), encoding="utf-8")
+    monkeypatch.setattr(model_proxy, "FALLBACK_MODELS_FILE", str(manifest))
+    monkeypatch.setattr(model_proxy.Handler, "_router_request", fake_router_request)
+    monkeypatch.setattr(model_proxy.time, "sleep", sleeps.append)
+    adapter = ThreadingHTTPServer(("127.0.0.1", 0), model_proxy.Handler)
+    threading.Thread(target=adapter.serve_forever, daemon=True).start()
+
+    try:
+        response = httpx.post(
+            f"http://127.0.0.1:{adapter.server_port}/v1/chat/completions",
+            json={
+                "model": "hermes-free",
+                "messages": [{"role": "user", "content": "سلام"}],
+                "stream": True,
+            },
+        )
+    finally:
+        adapter.shutdown()
+        adapter.server_close()
+
+    assert response.status_code == 200
+    assert attempts == ["groq/test", "groq/test"]
+    assert sleeps == [pytest.approx(0.76)]
+    assert "بازیابی شد" in response.text

@@ -42,8 +42,8 @@ const secretProviders = [
 const comboId = "hermes-free-fallback";
 const comboName = "hermes-free";
 const preferredModelOrder = [
-  "groq/llama-3.3-70b-versatile",
   "groq/openai/gpt-oss-120b",
+  "groq/llama-3.3-70b-versatile",
   "oc/deepseek-v4-flash-free",
   "oc/mimo-v2.5-free",
   "oc/big-pickle",
