@@ -410,7 +410,10 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         host, provider_path, key_env = destination
-        api_key = os.environ.get(key_env, "").strip()
+        # PowerShell 5.1 pipelines can leave CR/LF characters in a secret
+        # transferred over SSH. API keys never contain whitespace, so remove
+        # it defensively before constructing an HTTP header.
+        api_key = "".join(os.environ.get(key_env, "").split())
         if not api_key:
             body = json.dumps(
                 {"error": {"message": f"Missing {key_env}"}}
@@ -515,7 +518,7 @@ class Handler(BaseHTTPRequestHandler):
                             else MODEL_ATTEMPT_TIMEOUT
                         ),
                     )
-                except (ConnectionError, OSError, TimeoutError, socket.timeout,
+                except (ConnectionError, OSError, TimeoutError, ValueError, socket.timeout,
                         http.client.HTTPException) as error:
                     failures.append(f"{model}: {type(error).__name__}")
                     cool_down_model(model, None)

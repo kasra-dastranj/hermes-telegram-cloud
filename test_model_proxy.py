@@ -249,7 +249,7 @@ def test_direct_gorouter_request_uses_normal_claude_route(monkeypatch):
         def close():
             pass
 
-    monkeypatch.setenv("GOROUTER_API_KEY", "test-gorouter-secret")
+    monkeypatch.setenv("GOROUTER_API_KEY", "test-gorouter-secret\r\n")
     monkeypatch.setattr(model_proxy.http.client, "HTTPSConnection", FakeConnection)
     handler = object.__new__(model_proxy.Handler)
     status, _headers, _body = handler._model_request(
