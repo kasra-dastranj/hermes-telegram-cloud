@@ -100,7 +100,7 @@ model:
   api_key: local-no-key-required
   api_mode: chat_completions
   context_length: 65536
-  max_tokens: 2048
+  max_tokens: 768
 agent:
   max_turns: 35
   api_max_retries: 1
@@ -118,11 +118,7 @@ platform_toolsets:
   telegram:
     - terminal
     - file
-    - code_execution
-    - skills
-    - todo
     - memory
-    - session_search
     - clarify
     - cronjob
     - no_mcp

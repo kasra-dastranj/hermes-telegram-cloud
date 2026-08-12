@@ -10,10 +10,70 @@ from openai import OpenAI
 import model_proxy
 from model_proxy import (
     bounded_messages,
+    compact_tools,
     model_cooldown_seconds,
     request_for_model,
     response_to_sse,
 )
+
+
+def test_compact_tools_preserves_schema_and_removes_documentation_bulk():
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": "x" * 500,
+                "parameters": {
+                    "title": "Terminal arguments",
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "y" * 1000,
+                            "examples": ["echo ok"],
+                        }
+                    },
+                    "required": ["command"],
+                },
+            },
+        }
+    ]
+
+    compacted = compact_tools(tools)
+
+    function = compacted[0]["function"]
+    assert function["name"] == "terminal"
+    assert len(function["description"]) == 240
+    assert function["parameters"]["type"] == "object"
+    assert function["parameters"]["required"] == ["command"]
+    assert "description" not in function["parameters"]["properties"]["command"]
+    assert "examples" not in function["parameters"]["properties"]["command"]
+
+
+def test_groq_attempt_caps_completion_and_compacts_tools():
+    source = {
+        "model": "hermes-free",
+        "messages": [{"role": "user", "content": "سلام"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "x" * 1000,
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        "max_tokens": 2048,
+    }
+
+    attempt = request_for_model(source, "groq/llama-3.3-70b-versatile")
+
+    assert attempt["max_tokens"] == 512
+    assert len(attempt["tools"][0]["function"]["description"]) == 240
+    assert source["max_tokens"] == 2048
+    assert len(source["tools"][0]["function"]["description"]) == 1000
 
 
 def _events(body: bytes):
@@ -390,7 +450,9 @@ def test_combo_returns_json_error_after_all_models_fail(monkeypatch, tmp_path):
 def test_combo_falls_through_timeout_to_next_model(monkeypatch, tmp_path):
     attempted_models = []
 
-    def fake_router_request(_self, _method, _path, raw_body, _headers):
+    def fake_router_request(
+        _self, _method, _path, raw_body, _headers, timeout=None
+    ):
         model = json.loads(raw_body)["model"]
         attempted_models.append(model)
         if model == "provider/timeout":

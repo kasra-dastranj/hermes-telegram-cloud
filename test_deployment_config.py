@@ -52,7 +52,7 @@ def test_long_tasks_and_context_have_defensive_settings():
     assert config["agent"]["api_max_retries"] == 1
     assert config["compression"]["in_place"] is True
     assert config["model"]["context_length"] == 65536
-    assert config["model"]["max_tokens"] == 2048
+    assert config["model"]["max_tokens"] == 768
     assert config["compression"]["threshold_tokens"] == 8000
     assert config["compression"]["proactive_prune_tokens"] == 6000
     assert config["stt"]["language"] == "fa"
@@ -67,11 +67,7 @@ def test_telegram_only_loads_cloud_safe_useful_toolsets():
     assert {
         "terminal",
         "file",
-        "code_execution",
-        "skills",
-        "todo",
         "memory",
-        "session_search",
         "clarify",
         "cronjob",
         "no_mcp",

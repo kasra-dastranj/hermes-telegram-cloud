@@ -21,8 +21,11 @@ from typing import Any
 LISTEN_PORT = int(os.environ.get("MODEL_PROXY_PORT", "20129"))
 ROUTER_PORT = int(os.environ.get("ROUTER_PORT", "20128"))
 MODEL_ATTEMPT_TIMEOUT = int(os.environ.get("MODEL_ATTEMPT_TIMEOUT", "20"))
+OPENROUTER_ATTEMPT_TIMEOUT = int(
+    os.environ.get("OPENROUTER_ATTEMPT_TIMEOUT", "45")
+)
 MODEL_HISTORY_MAX_CHARS = int(os.environ.get("MODEL_HISTORY_MAX_CHARS", "24000"))
-GROQ_HISTORY_MAX_CHARS = int(os.environ.get("GROQ_HISTORY_MAX_CHARS", "12000"))
+GROQ_HISTORY_MAX_CHARS = int(os.environ.get("GROQ_HISTORY_MAX_CHARS", "9000"))
 FALLBACK_MODELS_FILE = os.environ.get(
     "FALLBACK_MODELS_FILE", "/opt/data/9router/fallback-models.json"
 )
@@ -80,6 +83,32 @@ def bounded_messages(messages: list[Any], max_chars: int) -> list[Any]:
     ):
         selected.pop(0)
     return system + selected
+
+
+def _compact_schema(value: Any, depth: int = 0) -> Any:
+    """Remove documentation-only schema bulk while keeping tool validation intact."""
+    if isinstance(value, list):
+        return [_compact_schema(item, depth + 1) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    compacted: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in {"title", "examples", "example", "$comment", "default"}:
+            continue
+        if key == "description":
+            if depth <= 2 and isinstance(item, str):
+                compacted[key] = item[:240]
+            continue
+        compacted[key] = _compact_schema(item, depth + 1)
+    return compacted
+
+
+def compact_tools(tools: Any) -> Any:
+    """Keep function names and JSON schemas, but trim verbose prose for Groq."""
+    if not isinstance(tools, list):
+        return tools
+    return [_compact_schema(tool) for tool in tools]
 
 
 def model_cooldown_seconds(status: int | None) -> int:
@@ -160,11 +189,17 @@ def request_for_model(
             )
             for message in sanitized_messages
         ]
-        requested_max = attempt_payload.get("max_tokens", 1024)
+        # Groq's free-tier TPM limit counts the prompt, tool schemas, and the
+        # requested completion together. Hermes tool descriptions are large,
+        # so retain their executable schemas but remove documentation-only
+        # prose and reserve a modest completion budget for each agent turn.
+        if "tools" in attempt_payload:
+            attempt_payload["tools"] = compact_tools(attempt_payload["tools"])
+        requested_max = attempt_payload.get("max_tokens", 512)
         try:
-            attempt_payload["max_tokens"] = min(int(requested_max), 1024)
+            attempt_payload["max_tokens"] = min(int(requested_max), 512)
         except (TypeError, ValueError):
-            attempt_payload["max_tokens"] = 1024
+            attempt_payload["max_tokens"] = 512
     elif sanitized_messages is not None:
         requested_max = attempt_payload.get("max_tokens", 2048)
         try:
@@ -263,10 +298,15 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "HermesModelBuffer/1.0"
 
     def _router_request(
-        self, method: str, path: str, raw_body: bytes, headers: dict[str, str]
+        self,
+        method: str,
+        path: str,
+        raw_body: bytes,
+        headers: dict[str, str],
+        timeout: int | None = None,
     ) -> tuple[int, list[tuple[str, str]], bytes]:
         connection = http.client.HTTPConnection(
-            "127.0.0.1", ROUTER_PORT, timeout=MODEL_ATTEMPT_TIMEOUT
+            "127.0.0.1", ROUTER_PORT, timeout=timeout or MODEL_ATTEMPT_TIMEOUT
         )
         try:
             connection.request(
@@ -329,7 +369,15 @@ class Handler(BaseHTTPRequestHandler):
             )
             try:
                 status, _headers, response_body = self._router_request(
-                    "POST", self.path, attempt_body, attempt_headers
+                    "POST",
+                    self.path,
+                    attempt_body,
+                    attempt_headers,
+                    timeout=(
+                        OPENROUTER_ATTEMPT_TIMEOUT
+                        if model.startswith("openrouter/")
+                        else MODEL_ATTEMPT_TIMEOUT
+                    ),
                 )
             except (ConnectionError, OSError, TimeoutError, socket.timeout,
                     http.client.HTTPException) as error:
