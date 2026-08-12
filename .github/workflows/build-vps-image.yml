@@ -10,7 +10,6 @@ on:
       - front_proxy.py
       - model_proxy.py
       - configure_9router.js
-      - patch_hermes_stt.py
       - patch_hermes_streaming.py
       - backup_sync.py
       - .github/workflows/build-vps-image.yml

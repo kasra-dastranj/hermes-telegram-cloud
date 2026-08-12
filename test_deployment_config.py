@@ -22,6 +22,8 @@ def test_gateway_and_model_transport_are_deliberately_separate():
     assert config["display"]["streaming"] is False
     assert "HERMES_UPSTREAM_STREAMING=true" in dockerfile
     assert "BACKUP_ALLOW_MISSING_REMOTE=false" in dockerfile
+    assert "nousresearch/hermes-agent:v2026.8.3@sha256:" in dockerfile
+    assert "patch_hermes_stt.py" not in dockerfile
     assert "fallback-models.json" in (ROOT / "configure_9router.js").read_text(
         encoding="utf-8"
     )
@@ -49,10 +51,12 @@ def test_long_tasks_and_context_have_defensive_settings():
     assert config["agent"]["intent_ack_continuation"] is True
     assert config["agent"]["api_max_retries"] == 1
     assert config["compression"]["in_place"] is True
-    assert config["model"]["context_length"] == 32768
+    assert config["model"]["context_length"] == 65536
     assert config["model"]["max_tokens"] == 2048
     assert config["compression"]["threshold_tokens"] == 8000
     assert config["compression"]["proactive_prune_tokens"] == 6000
+    assert config["stt"]["language"] == "fa"
+    assert config["stt"]["groq"]["language"] == "fa"
 
 
 def test_telegram_only_loads_cloud_safe_useful_toolsets():

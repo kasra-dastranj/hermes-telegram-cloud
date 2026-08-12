@@ -1,4 +1,4 @@
-FROM nousresearch/hermes-agent:v2026.7.20@sha256:f7b35053268f532f98955195c909f15a230470fbcbdacaa9fdecb95707dad04a
+FROM nousresearch/hermes-agent:v2026.8.3@sha256:c0cab4e3711bcb27a312be1b3776254fc06fd50d5f7a6b8017915fc7171cb39e
 
 USER root
 
@@ -17,20 +17,16 @@ COPY --chmod=0755 start.sh /app/start.sh
 COPY front_proxy.py /app/front_proxy.py
 COPY model_proxy.py /app/model_proxy.py
 COPY configure_9router.js /app/configure_9router.js
-COPY patch_hermes_stt.py /app/patch_hermes_stt.py
 COPY patch_hermes_streaming.py /app/patch_hermes_streaming.py
 COPY backup_sync.py /app/backup_sync.py
 
-# Hermes v0.19.0 does not pass a language to Groq Whisper. Patch only that
-# exact call at build time so Persian voice notes stay Persian. The patch
-# deliberately fails the build if an upstream image changes the target code.
-RUN python3 /app/patch_hermes_stt.py
+# Hermes v0.20.0 natively resolves stt.groq.language/stt.language. Keep only
+# the narrow non-streaming switch needed by the buffered multi-model fallback.
 RUN python3 /app/patch_hermes_streaming.py
 
 ENV HERMES_HOME=/opt/data \
     DATA_DIR=/opt/data/9router \
     TELEGRAM_WEBHOOK_PORT=8443 \
-    STT_GROQ_LANGUAGE=fa \
     HERMES_UPSTREAM_STREAMING=true \
     BACKUP_ALLOW_MISSING_REMOTE=false \
     HERMES_GATEWAY_NO_SUPERVISE=1 \

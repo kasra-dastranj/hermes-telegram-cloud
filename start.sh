@@ -24,7 +24,6 @@ export MODEL_PROXY_PORT="${MODEL_PROXY_PORT:-20129}"
 export HERMES_TELEGRAM_DISABLE_FALLBACK_IPS="${HERMES_TELEGRAM_DISABLE_FALLBACK_IPS:-false}"
 export HERMES_TELEGRAM_INIT_TIMEOUT="${HERMES_TELEGRAM_INIT_TIMEOUT:-30}"
 export STT_GROQ_MODEL="${STT_GROQ_MODEL:-whisper-large-v3-turbo}"
-export STT_GROQ_LANGUAGE="${STT_GROQ_LANGUAGE:-fa}"
 export BACKUP_INTERVAL_SECONDS="${BACKUP_INTERVAL_SECONDS:-600}"
 export BACKUP_INITIAL_DELAY_SECONDS="${BACKUP_INITIAL_DELAY_SECONDS:-180}"
 
@@ -100,7 +99,7 @@ model:
   base_url: http://127.0.0.1:20129/v1
   api_key: local-no-key-required
   api_mode: chat_completions
-  context_length: 32768
+  context_length: 65536
   max_tokens: 2048
 agent:
   max_turns: 35
@@ -155,6 +154,9 @@ stt:
   enabled: true
   echo_transcripts: true
   provider: groq
+  language: fa
+  groq:
+    language: fa
 auxiliary:
   vision:
     provider: openrouter
