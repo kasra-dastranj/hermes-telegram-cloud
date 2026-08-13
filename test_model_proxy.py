@@ -428,6 +428,63 @@ def test_http_adapter_buffers_router_and_streams_to_openai_sdk(
     assert "stream_options" not in received
 
 
+def test_combo_non_streaming_uses_fallback_and_returns_json(monkeypatch, tmp_path):
+    attempted_models = []
+
+    def fake_model_request(
+        _self, model, _path, raw_body, _headers, timeout
+    ):
+        request = json.loads(raw_body)
+        attempted_models.append((model, request["stream"], timeout))
+        body = json.dumps(
+            {
+                "id": "chatcmpl-buffered-json",
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "پاسخ عادی سالم است",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return 200, [("Content-Type", "application/json")], body
+
+    manifest = tmp_path / "fallback-models.json"
+    manifest.write_text(json.dumps(["provider/test"]), encoding="utf-8")
+    monkeypatch.setattr(model_proxy, "FALLBACK_MODELS_FILE", str(manifest))
+    monkeypatch.setattr(model_proxy.Handler, "_model_request", fake_model_request)
+    adapter = ThreadingHTTPServer(("127.0.0.1", 0), model_proxy.Handler)
+    threading.Thread(target=adapter.serve_forever, daemon=True).start()
+
+    try:
+        response = httpx.post(
+            f"http://127.0.0.1:{adapter.server_port}/v1/chat/completions",
+            json={
+                "model": "hermes-free",
+                "messages": [{"role": "user", "content": "سلام"}],
+                "stream": False,
+            },
+        )
+    finally:
+        adapter.shutdown()
+        adapter.server_close()
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["choices"][0]["message"]["content"] == (
+        "پاسخ عادی سالم است"
+    )
+    assert attempted_models == [
+        ("provider/test", False, model_proxy.MODEL_ATTEMPT_TIMEOUT)
+    ]
+
+
 def test_http_adapter_preserves_router_error(monkeypatch):
     class RateLimitedRouter(BaseHTTPRequestHandler):
         def do_POST(self):  # noqa: N802

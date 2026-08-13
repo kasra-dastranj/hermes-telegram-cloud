@@ -32,7 +32,7 @@ GROQ_HISTORY_MAX_CHARS = int(os.environ.get("GROQ_HISTORY_MAX_CHARS", "9000"))
 FALLBACK_MODELS_FILE = os.environ.get(
     "FALLBACK_MODELS_FILE", "/opt/data/9router/fallback-models.json"
 )
-COMBO_MODEL = os.environ.get("COMBO_MODEL", "hermes-free")
+COMBO_MODEL = os.environ.get("COMBO_MODEL", "").strip() or "hermes-free"
 GROQ_HISTORY_METADATA = {
     "reasoning_details",
     "reasoning_content",
@@ -467,10 +467,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(response_body)
 
+    def _send_completed_json(self, status: int, payload: dict[str, Any]) -> None:
+        """Return a buffered completion to clients that did not request SSE."""
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _fallback_completion(
         self,
         request_payload: dict[str, Any],
         forwarded_headers: dict[str, str],
+        stream_response: bool,
     ) -> None:
         try:
             models = load_fallback_models()
@@ -572,6 +582,7 @@ class Handler(BaseHTTPRequestHandler):
             if 200 <= status < 300:
                 try:
                     completed = json.loads(response_body)
+                    # Validate buffered provider output for both transports.
                     stream_body = response_to_sse(completed)
                 except (TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
                     failures.append(f"{model}: invalid response")
@@ -583,7 +594,10 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"[model-proxy] Selected fallback model: {model}", flush=True)
                 with MODEL_COOLDOWNS_LOCK:
                     MODEL_COOLDOWNS.pop(model, None)
-                self._send_stream(status, stream_body)
+                if stream_response:
+                    self._send_stream(status, stream_body)
+                else:
+                    self._send_completed_json(status, completed)
                 return
 
             failures.append(f"{model}: HTTP {status}")
@@ -630,11 +644,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if (
                 is_completion
-                and requested_stream
                 and request_payload is not None
                 and request_payload.get("model") == COMBO_MODEL
             ):
-                self._fallback_completion(request_payload, forwarded_headers)
+                # Always resolve the managed combo here. Previously only SSE
+                # requests took this path, so the gateway's non-streaming mode
+                # leaked the combo back to 9Router. 9Router then treated the
+                # GoRouter credential as an OpenAI key and returned a 401.
+                self._fallback_completion(
+                    request_payload,
+                    forwarded_headers,
+                    stream_response=requested_stream,
+                )
                 return
 
             status, response_headers, response_body = self._router_request(

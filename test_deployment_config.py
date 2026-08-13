@@ -58,29 +58,18 @@ def test_long_tasks_and_context_have_defensive_settings():
     assert config["agent"]["api_max_retries"] == 1
     assert config["compression"]["in_place"] is True
     assert config["model"]["context_length"] == 65536
-    assert config["model"]["max_tokens"] == 1024
+    assert config["model"]["max_tokens"] == 2048
     assert config["compression"]["threshold_tokens"] == 8000
     assert config["compression"]["proactive_prune_tokens"] == 6000
     assert config["stt"]["language"] == "fa"
     assert config["stt"]["groq"]["language"] == "fa"
 
 
-def test_telegram_only_loads_cloud_safe_useful_toolsets():
+def test_telegram_inherits_the_official_full_default_toolset():
     config = generated_config()
-    telegram_tools = set(config["platform_toolsets"]["telegram"])
 
-    assert config["agent"]["disabled_toolsets"] == ["kanban"]
-    assert {
-        "terminal",
-        "file",
-        "memory",
-        "clarify",
-        "cronjob",
-        "no_mcp",
-    } == telegram_tools
-    assert telegram_tools.isdisjoint(
-        {"browser", "computer_use", "image_gen", "video_gen", "tts", "web"}
-    )
+    assert "platform_toolsets" not in config
+    assert "disabled_toolsets" not in config["agent"]
 
 
 def test_startup_fails_closed_on_backup_restore_errors():

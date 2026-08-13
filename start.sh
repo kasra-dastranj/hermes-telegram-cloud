@@ -100,28 +100,17 @@ model:
   api_key: local-no-key-required
   api_mode: chat_completions
   context_length: 65536
-  max_tokens: 1024
+  max_tokens: 2048
 agent:
   max_turns: 35
   api_max_retries: 1
-  disabled_toolsets:
-    - kanban
   intent_ack_continuation: true
   verbose: false
   reasoning_effort: medium
   image_input_mode: text
-# Keep the normal Hermes agent tools available in Telegram. These let Hermes
-# inspect and maintain its workspace, persist knowledge, ask structured
-# follow-up questions, and create cron jobs. Desktop-only tools remain absent,
-# while "no_mcp" prevents unknown integrations from adding schemas.
-platform_toolsets:
-  telegram:
-    - terminal
-    - file
-    - memory
-    - clarify
-    - cronjob
-    - no_mcp
+# Do not freeze platform_toolsets here. When this key is absent Hermes uses
+# its official hermes-telegram composite. Optional capabilities still apply
+# their own runtime requirement checks.
 terminal:
   backend: local
   cwd: /opt/data/workspace
