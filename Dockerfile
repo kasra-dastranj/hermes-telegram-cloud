@@ -13,6 +13,13 @@ RUN mkdir -p /opt/9router-seed \
     && uv pip install --python /opt/hermes/.venv/bin/python --no-cache \
         'huggingface_hub>=0.34,<2' 'cryptography>=44,<47'
 
+# agent-browser does not itself honor PLAYWRIGHT_BROWSERS_PATH when launching.
+# Expose the Chromium already shipped by the pinned Hermes image under a
+# standard system name so both requirement checks and the actual CLI find it.
+RUN browser_binary="$(find /opt/hermes/.playwright -type f -name chrome-headless-shell -perm -111 | head -n 1)" \
+    && test -n "$browser_binary" \
+    && ln -sf "$browser_binary" /usr/local/bin/chromium
+
 COPY --chmod=0755 start.sh /app/start.sh
 COPY front_proxy.py /app/front_proxy.py
 COPY model_proxy.py /app/model_proxy.py

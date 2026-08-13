@@ -22,6 +22,7 @@ def test_gateway_and_model_transport_are_deliberately_separate():
     assert config["display"]["streaming"] is False
     assert "HERMES_UPSTREAM_STREAMING=true" in dockerfile
     assert "PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright" in dockerfile
+    assert 'ln -sf "$browser_binary" /usr/local/bin/chromium' in dockerfile
     assert "BACKUP_ALLOW_MISSING_REMOTE=false" in dockerfile
     assert "nousresearch/hermes-agent:v2026.8.3@sha256:" in dockerfile
     assert "patch_hermes_stt.py" not in dockerfile
