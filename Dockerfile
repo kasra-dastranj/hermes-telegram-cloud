@@ -26,6 +26,7 @@ RUN python3 /app/patch_hermes_streaming.py
 
 ENV HERMES_HOME=/opt/data \
     DATA_DIR=/opt/data/9router \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright \
     TELEGRAM_WEBHOOK_PORT=8443 \
     HERMES_UPSTREAM_STREAMING=true \
     BACKUP_ALLOW_MISSING_REMOTE=false \

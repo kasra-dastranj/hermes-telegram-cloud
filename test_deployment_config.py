@@ -21,6 +21,7 @@ def test_gateway_and_model_transport_are_deliberately_separate():
     assert config["streaming"]["enabled"] is False
     assert config["display"]["streaming"] is False
     assert "HERMES_UPSTREAM_STREAMING=true" in dockerfile
+    assert "PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright" in dockerfile
     assert "BACKUP_ALLOW_MISSING_REMOTE=false" in dockerfile
     assert "nousresearch/hermes-agent:v2026.8.3@sha256:" in dockerfile
     assert "patch_hermes_stt.py" not in dockerfile
@@ -74,6 +75,15 @@ def test_telegram_inherits_the_official_full_default_toolset():
 
     assert "platform_toolsets" not in config
     assert "disabled_toolsets" not in config["agent"]
+
+
+def test_personal_assistant_bootstrap_uses_memory_and_tools_without_overwrite():
+    source = (ROOT / "start.sh").read_text(encoding="utf-8")
+
+    assert 'if [ ! -e "$agent_rules" ]' in source
+    assert "use `memory` or `session_search`" in source
+    assert "proactively use the" in source
+    assert "Use cronjob for scheduling requests" in source
 
 
 def test_startup_fails_closed_on_backup_restore_errors():

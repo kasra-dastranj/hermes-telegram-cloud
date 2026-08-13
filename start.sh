@@ -96,6 +96,28 @@ do
     fi
 done
 
+# Give the personal Telegram agent a small, durable operating policy. Never
+# overwrite a user-maintained project instruction file: this bootstrap runs
+# only once when the workspace has no AGENTS.md yet.
+agent_rules="$HERMES_HOME/workspace/AGENTS.md"
+if [ ! -e "$agent_rules" ]; then
+    cat > "$agent_rules" <<'RULES'
+# Personal Telegram assistant behavior
+
+- Reply in Persian unless the user requests another language.
+- When the user refers to prior knowledge, preferences, identity, or earlier
+  work, consult injected memory first and use `memory` or `session_search`
+  before asking them to repeat information already available.
+- For requests to find or research current information, proactively use the
+  browser or terminal/network tools and base the answer on retrieved evidence.
+- Carry multi-step tasks forward. Ask only for missing information that would
+  materially change the result; do not replace action with a generic offer.
+- Use cronjob for scheduling requests and verify the resulting job state.
+- Never claim that a tool action succeeded without checking its result.
+RULES
+    chown hermes:hermes "$agent_rules"
+fi
+
 if [ -d /opt/9router-seed/runtime ] && [ ! -d "$DATA_DIR/runtime" ]; then
     echo "[startup] Seeding 9Router runtime dependencies..."
     cp -a /opt/9router-seed/. "$DATA_DIR/"
