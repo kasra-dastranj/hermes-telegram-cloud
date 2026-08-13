@@ -11,6 +11,8 @@ import model_proxy
 from model_proxy import (
     bounded_messages,
     compact_tools,
+    attempt_timeout_for_model,
+    history_budget_for_model,
     model_cooldown_seconds,
     rate_limit_retry_seconds,
     request_for_model,
@@ -135,6 +137,38 @@ def test_history_budget_keeps_system_and_recent_messages_and_trims_tool_output()
     tool_messages = [message for message in bounded if message.get("role") == "tool"]
     if tool_messages:
         assert "oversized content trimmed" in tool_messages[0]["content"]
+
+
+def test_primary_claude_keeps_long_conversation_history():
+    history = [
+        {
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"turn-{index}: " + ("شناخت قبلی کاربر " * 100),
+        }
+        for index in range(120)
+    ]
+    source = {
+        "model": "hermes-free",
+        "messages": [
+            {"role": "system", "content": "rules"},
+            *history,
+            {"role": "user", "content": "ادامه بده"},
+        ],
+    }
+
+    attempt = request_for_model(source, "gorouter/claude-opus-5")
+
+    assert attempt["messages"][1]["content"] == history[0]["content"]
+    assert len(attempt["messages"]) == len(source["messages"])
+    assert history_budget_for_model("gorouter/claude-opus-5") > (
+        history_budget_for_model("groq/openai/gpt-oss-120b")
+    )
+
+
+def test_primary_claude_has_a_tool_task_timeout_budget():
+    assert attempt_timeout_for_model("gorouter/claude-opus-5") == 90
+    assert attempt_timeout_for_model("groq/openai/gpt-oss-120b") == 20
+    assert attempt_timeout_for_model("openrouter/openrouter/free") == 45
 
 
 def test_provider_failures_receive_useful_cooldowns():

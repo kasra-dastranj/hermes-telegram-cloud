@@ -22,12 +22,23 @@ from typing import Any
 LISTEN_PORT = int(os.environ.get("MODEL_PROXY_PORT", "20129"))
 ROUTER_PORT = int(os.environ.get("ROUTER_PORT", "20128"))
 MODEL_ATTEMPT_TIMEOUT = int(os.environ.get("MODEL_ATTEMPT_TIMEOUT", "20"))
+GOROUTER_ATTEMPT_TIMEOUT = int(
+    os.environ.get("GOROUTER_ATTEMPT_TIMEOUT", "90")
+)
 OPENROUTER_ATTEMPT_TIMEOUT = int(
     os.environ.get("OPENROUTER_ATTEMPT_TIMEOUT", "45")
 )
 RATE_LIMIT_RETRIES = int(os.environ.get("RATE_LIMIT_RETRIES", "2"))
 RATE_LIMIT_MAX_WAIT = float(os.environ.get("RATE_LIMIT_MAX_WAIT", "65"))
-MODEL_HISTORY_MAX_CHARS = int(os.environ.get("MODEL_HISTORY_MAX_CHARS", "24000"))
+MODEL_HISTORY_MAX_CHARS = int(
+    os.environ.get("MODEL_HISTORY_MAX_CHARS", "180000")
+)
+GOROUTER_HISTORY_MAX_CHARS = int(
+    os.environ.get("GOROUTER_HISTORY_MAX_CHARS", "360000")
+)
+OPENROUTER_HISTORY_MAX_CHARS = int(
+    os.environ.get("OPENROUTER_HISTORY_MAX_CHARS", "120000")
+)
 GROQ_HISTORY_MAX_CHARS = int(os.environ.get("GROQ_HISTORY_MAX_CHARS", "9000"))
 FALLBACK_MODELS_FILE = os.environ.get(
     "FALLBACK_MODELS_FILE", "/opt/data/9router/fallback-models.json"
@@ -222,6 +233,26 @@ def load_fallback_models() -> list[str]:
     return [model.strip() for model in models]
 
 
+def history_budget_for_model(model: str) -> int:
+    """Keep rich history on Claude while protecting small free fallbacks."""
+    if model.startswith("gorouter/"):
+        return GOROUTER_HISTORY_MAX_CHARS
+    if model.startswith("groq/"):
+        return GROQ_HISTORY_MAX_CHARS
+    if model.startswith("openrouter/"):
+        return OPENROUTER_HISTORY_MAX_CHARS
+    return MODEL_HISTORY_MAX_CHARS
+
+
+def attempt_timeout_for_model(model: str) -> int:
+    """Give the primary Claude route time to complete tool-heavy turns."""
+    if model.startswith("gorouter/"):
+        return GOROUTER_ATTEMPT_TIMEOUT
+    if model.startswith("openrouter/"):
+        return OPENROUTER_ATTEMPT_TIMEOUT
+    return MODEL_ATTEMPT_TIMEOUT
+
+
 def request_for_model(
     request_payload: dict[str, Any], model: str
 ) -> dict[str, Any]:
@@ -236,11 +267,7 @@ def request_for_model(
     attempt_payload = {**request_payload, "model": model, "stream": False}
     messages = request_payload.get("messages")
     if isinstance(messages, list):
-        budget = (
-            GROQ_HISTORY_MAX_CHARS
-            if model.startswith("groq/")
-            else MODEL_HISTORY_MAX_CHARS
-        )
+        budget = history_budget_for_model(model)
         sanitized_messages = bounded_messages(messages, budget)
     else:
         sanitized_messages = None
@@ -522,11 +549,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.path,
                         attempt_body,
                         attempt_headers,
-                        timeout=(
-                            OPENROUTER_ATTEMPT_TIMEOUT
-                            if model.startswith("openrouter/")
-                            else MODEL_ATTEMPT_TIMEOUT
-                        ),
+                        timeout=attempt_timeout_for_model(model),
                     )
                 except (ConnectionError, OSError, TimeoutError, ValueError, socket.timeout,
                         http.client.HTTPException) as error:

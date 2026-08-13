@@ -57,10 +57,14 @@ def test_long_tasks_and_context_have_defensive_settings():
     assert config["agent"]["intent_ack_continuation"] is True
     assert config["agent"]["api_max_retries"] == 1
     assert config["compression"]["in_place"] is True
-    assert config["model"]["context_length"] == 65536
+    assert config["model"]["context_length"] == 131072
     assert config["model"]["max_tokens"] == 2048
-    assert config["compression"]["threshold_tokens"] == 8000
-    assert config["compression"]["proactive_prune_tokens"] == 6000
+    assert config["compression"]["threshold"] == 0.75
+    assert "threshold_tokens" not in config["compression"]
+    assert config["compression"]["target_ratio"] == 0.45
+    assert config["compression"]["protect_last_n"] == 12
+    assert config["compression"]["proactive_prune_tokens"] == 40000
+    assert config["compression"]["idle_compact_after_seconds"] == 1800
     assert config["stt"]["language"] == "fa"
     assert config["stt"]["groq"]["language"] == "fa"
 

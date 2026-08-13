@@ -49,6 +49,17 @@ fi
 mkdir -p "$HERMES_HOME" "$DATA_DIR"
 chown hermes:hermes "$HERMES_HOME"
 
+# The base image already bundles Playwright's headless Chromium outside the
+# persistent HOME. Point agent-browser at it explicitly; otherwise it searches
+# only /opt/data/.agent-browser and reports "Chrome not found" on the VPS.
+if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ]; then
+    browser_binary="$(find /opt/hermes/.playwright -type f -name chrome-headless-shell -perm -111 2>/dev/null | head -n 1 || true)"
+    if [ -n "$browser_binary" ]; then
+        export AGENT_BROWSER_EXECUTABLE_PATH="$browser_binary"
+        echo "[startup] Using bundled headless Chromium for browser tools."
+    fi
+fi
+
 # A free Render filesystem is ephemeral. Restore only when no local state.db
 # exists, so the same image also behaves correctly after migration to a VPS
 # with a persistent volume. A genuine restore failure is fatal: booting empty
@@ -99,7 +110,7 @@ model:
   base_url: http://127.0.0.1:20129/v1
   api_key: local-no-key-required
   api_mode: chat_completions
-  context_length: 65536
+  context_length: 131072
   max_tokens: 2048
 agent:
   max_turns: 35
@@ -124,14 +135,13 @@ streaming:
   mode: off
 compression:
   enabled: true
-  threshold: 0.35
-  threshold_tokens: 8000
-  target_ratio: 0.18
-  protect_last_n: 6
-  proactive_prune_tokens: 6000
+  threshold: 0.75
+  target_ratio: 0.45
+  protect_last_n: 12
+  proactive_prune_tokens: 40000
   proactive_prune_min_result_chars: 5000
   proactive_prune_min_reclaim_tokens: 3072
-  idle_compact_after_seconds: 300
+  idle_compact_after_seconds: 1800
   in_place: true
 session_reset:
   mode: none
