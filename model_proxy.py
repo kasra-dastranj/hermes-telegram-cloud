@@ -86,7 +86,14 @@ def _compact_message(message: Any) -> Any:
 
 
 def bounded_messages(messages: list[Any], max_chars: int) -> list[Any]:
-    """Keep system instructions and the newest coherent history within a budget."""
+    """Keep system instructions and the newest coherent user turn.
+
+    A tool continuation is only meaningful when the provider receives the user
+    request, the assistant tool call, and the matching tool result together.
+    Keep that latest turn atomically even when the (always-retained) system
+    prompt already consumes the nominal history budget, then use any remaining
+    room for older context.
+    """
     compacted = [_compact_message(message) for message in messages]
     system = [
         message
@@ -94,11 +101,27 @@ def bounded_messages(messages: list[Any], max_chars: int) -> list[Any]:
         if isinstance(message, dict) and message.get("role") == "system"
     ]
     conversation = [message for message in compacted if message not in system]
-    used = len(json.dumps(system, ensure_ascii=False, default=str))
+    latest_user_index = next(
+        (
+            index
+            for index in range(len(conversation) - 1, -1, -1)
+            if isinstance(conversation[index], dict)
+            and conversation[index].get("role") == "user"
+        ),
+        None,
+    )
+    if latest_user_index is None:
+        current_turn: list[Any] = []
+        older = conversation
+    else:
+        current_turn = conversation[latest_user_index:]
+        older = conversation[:latest_user_index]
+
+    used = len(json.dumps(system + current_turn, ensure_ascii=False, default=str))
     selected: list[Any] = []
-    for message in reversed(conversation):
+    for message in reversed(older):
         cost = len(json.dumps(message, ensure_ascii=False, default=str))
-        if selected and used + cost > max_chars:
+        if used + cost > max_chars:
             break
         selected.append(message)
         used += cost
@@ -109,7 +132,7 @@ def bounded_messages(messages: list[Any], max_chars: int) -> list[Any]:
         and selected[0].get("role") == "tool"
     ):
         selected.pop(0)
-    return system + selected
+    return system + selected + current_turn
 
 
 def _compact_schema(value: Any, depth: int = 0) -> Any:
@@ -296,8 +319,8 @@ def request_for_model(
             attempt_payload["max_tokens"] = min(int(requested_max), 1024)
         except (TypeError, ValueError):
             attempt_payload["max_tokens"] = 1024
-        if "gpt-oss" in model:
-            attempt_payload["reasoning_effort"] = "low"
+        if "gpt-oss" in model and not attempt_payload.get("reasoning_effort"):
+            attempt_payload["reasoning_effort"] = "medium"
     elif sanitized_messages is not None:
         requested_max = attempt_payload.get("max_tokens", 2048)
         try:

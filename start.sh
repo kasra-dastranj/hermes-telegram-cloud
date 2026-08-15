@@ -112,6 +112,12 @@ if [ ! -e "$agent_rules" ]; then
   browser or terminal/network tools and base the answer on retrieved evidence.
 - Carry multi-step tasks forward. Ask only for missing information that would
   materially change the result; do not replace action with a generic offer.
+- When the user asks for an action, execute it now and continue after a tool
+  failure with a safe alternative. Do not answer only "ready", "I can do it",
+  or "come back whenever you want" while an unfinished request exists.
+- Never prefix ordinary private-chat replies with
+  "از طرف دوست باهوش کسری :". That prefix belongs only to an actual Telegram
+  channel post explicitly created through the telegram-channel-ops workflow.
 - Use cronjob for scheduling requests and verify the resulting job state.
 - Never claim that a tool action succeeded without checking its result.
 RULES

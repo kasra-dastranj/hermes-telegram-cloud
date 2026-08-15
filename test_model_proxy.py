@@ -70,12 +70,13 @@ def test_groq_attempt_caps_completion_and_compacts_tools():
             }
         ],
         "max_tokens": 2048,
+        "reasoning_effort": "medium",
     }
 
     attempt = request_for_model(source, "groq/openai/gpt-oss-120b")
 
     assert attempt["max_tokens"] == 1024
-    assert attempt["reasoning_effort"] == "low"
+    assert attempt["reasoning_effort"] == "medium"
     assert len(attempt["tools"][0]["function"]["description"]) == 240
     assert source["max_tokens"] == 2048
     assert len(source["tools"][0]["function"]["description"]) == 1000
@@ -137,6 +138,46 @@ def test_history_budget_keeps_system_and_recent_messages_and_trims_tool_output()
     tool_messages = [message for message in bounded if message.get("role") == "tool"]
     if tool_messages:
         assert "oversized content trimmed" in tool_messages[0]["content"]
+
+
+def test_history_budget_keeps_entire_latest_tool_turn_when_system_exceeds_budget():
+    latest_user = {
+        "role": "user",
+        "content": "Search for a rental and continue until you have concrete results.",
+    }
+    assistant_tool_call = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_search",
+                "type": "function",
+                "function": {
+                    "name": "browser_navigate",
+                    "arguments": '{"url":"https://example.com/search"}',
+                },
+            }
+        ],
+    }
+    tool_result = {
+        "role": "tool",
+        "tool_call_id": "call_search",
+        "content": "The first search provider blocked automated access.",
+    }
+    messages = [
+        {"role": "system", "content": "rules" * 7000},
+        {"role": "user", "content": "an older request"},
+        {"role": "assistant", "content": "an older reply"},
+        latest_user,
+        assistant_tool_call,
+        tool_result,
+    ]
+
+    bounded = bounded_messages(messages, 9000)
+
+    assert bounded[0]["role"] == "system"
+    assert bounded[1:] == [latest_user, assistant_tool_call, tool_result]
+    assert bounded[1]["role"] != "tool"
 
 
 def test_primary_claude_keeps_long_conversation_history():
