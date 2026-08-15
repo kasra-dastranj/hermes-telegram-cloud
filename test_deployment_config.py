@@ -46,7 +46,11 @@ def test_fallback_excludes_known_broken_or_stalling_models():
     assert "gorouter/claude-opus-5-thinking" not in preferred
     assert "groq/openai/gpt-oss-120b" in preferred
     assert "groq/openai/gpt-oss-20b" in preferred
-    assert "groq/qwen/qwen3.6-27b" in preferred
+    assert "groq/qwen/qwen3.6-27b" not in preferred
+    assert "openrouter/dots-studio/dots-3-note-preview:free" in preferred
+    assert preferred.index(
+        '"openrouter/dots-studio/dots-3-note-preview:free"'
+    ) < preferred.index('"openrouter/openrouter/free"')
     assert "groq/llama-3.3-70b-versatile" not in preferred
     assert "oc/deepseek-v4-flash-free" not in preferred
     assert "oc/nemotron-3-ultra-free" not in preferred

@@ -16,6 +16,7 @@ from model_proxy import (
     model_cooldown_seconds,
     rate_limit_retry_seconds,
     request_for_model,
+    response_quality_error,
     response_to_sse,
     tool_call_failed,
 )
@@ -176,8 +177,74 @@ def test_history_budget_keeps_entire_latest_tool_turn_when_system_exceeds_budget
     bounded = bounded_messages(messages, 9000)
 
     assert bounded[0]["role"] == "system"
-    assert bounded[1:] == [latest_user, assistant_tool_call, tool_result]
+    assert bounded[-3:] == [latest_user, assistant_tool_call, tool_result]
     assert bounded[1]["role"] != "tool"
+
+
+def test_history_budget_excludes_large_system_and_keeps_previous_turn_for_followup():
+    previous_user = {
+        "role": "user",
+        "content": "در ساری خانه اجاره‌ای با بودجه مشخص پیدا کن",
+    }
+    previous_answer = {
+        "role": "assistant",
+        "content": "چند نتیجه پیدا کردم و آماده‌ام لینک‌ها را ارائه کنم.",
+    }
+    followup = {"role": "user", "content": "با لینک بده"}
+    messages = [
+        {"role": "system", "content": "قوانین" * 9000},
+        previous_user,
+        previous_answer,
+        followup,
+    ]
+
+    bounded = bounded_messages(messages, 9000)
+
+    assert bounded[0]["role"] == "system"
+    assert bounded[1:] == [previous_user, previous_answer, followup]
+
+
+def test_groq_compacts_tool_results_and_keeps_valid_recent_protocol():
+    messages = [
+        {"role": "system", "content": "rules" * 5000},
+        {"role": "user", "content": "نتایج واقعی را پیدا کن"},
+    ]
+    for index in range(8):
+        messages.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": f"call_{index}",
+                            "type": "function",
+                            "function": {
+                                "name": "browser",
+                                "arguments": f'{{"page":{index}}}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": f"call_{index}",
+                    "content": "x" * 10000,
+                },
+            ]
+        )
+
+    attempt = request_for_model(
+        {"model": "hermes-free", "messages": messages},
+        "groq/openai/gpt-oss-120b",
+    )
+
+    conversation = [m for m in attempt["messages"] if m["role"] != "system"]
+    assert conversation[0]["role"] == "user"
+    assert len(json.dumps(conversation, ensure_ascii=False)) <= 9000
+    for message in conversation:
+        if message["role"] == "tool":
+            assert len(message["content"]) <= 1200
 
 
 def test_primary_claude_keeps_long_conversation_history():
@@ -428,6 +495,42 @@ def test_response_to_sse_rejects_empty_assistant_message():
         )
 
 
+def test_quality_guard_rejects_garbled_mixed_script_persian_reply():
+    request = {
+        "messages": [{"role": "user", "content": "یک خانه در ساری پیدا کن"}]
+    }
+    response = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "نتیجه شما Αλφα שלום 你好世界 است",
+                }
+            }
+        ]
+    }
+
+    assert response_quality_error(response, request) == "garbled mixed-script response"
+
+
+def test_quality_guard_accepts_clean_persian_with_latin_url():
+    request = {
+        "messages": [{"role": "user", "content": "یک خانه در ساری پیدا کن"}]
+    }
+    response = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "این نتیجهٔ واقعی است: https://divar.ir/example",
+                }
+            }
+        ]
+    }
+
+    assert response_quality_error(response, request) is None
+
+
 def test_http_adapter_buffers_router_and_streams_to_openai_sdk(
     monkeypatch, tmp_path
 ):
@@ -676,6 +779,61 @@ def test_combo_falls_through_empty_success_to_next_model(monkeypatch, tmp_path):
 
     assert attempted_models == ["provider/empty", "provider/working"]
     assert text == "مدل دوم پاسخ داد"
+
+
+def test_combo_rejects_garbled_persian_success_and_uses_next_model(
+    monkeypatch, tmp_path
+):
+    attempted_models = []
+
+    def fake_model_request(
+        _self, model, _path, _raw_body, _headers, timeout=None
+    ):
+        attempted_models.append(model)
+        content = (
+            "نتیجه αλφα שלום 你好世界"
+            if model == "provider/garbled"
+            else "پاسخ فارسی سالم"
+        )
+        body = json.dumps(
+            {
+                "model": model,
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return 200, [], body
+
+    manifest = tmp_path / "fallback-models.json"
+    manifest.write_text(
+        json.dumps(["provider/garbled", "provider/working"]), encoding="utf-8"
+    )
+    monkeypatch.setattr(model_proxy, "FALLBACK_MODELS_FILE", str(manifest))
+    monkeypatch.setattr(model_proxy.Handler, "_model_request", fake_model_request)
+    adapter = ThreadingHTTPServer(("127.0.0.1", 0), model_proxy.Handler)
+    threading.Thread(target=adapter.serve_forever, daemon=True).start()
+
+    try:
+        response = httpx.post(
+            f"http://127.0.0.1:{adapter.server_port}/v1/chat/completions",
+            json={
+                "model": "hermes-free",
+                "messages": [{"role": "user", "content": "به فارسی پاسخ بده"}],
+                "stream": False,
+            },
+        )
+    finally:
+        adapter.shutdown()
+        adapter.server_close()
+
+    assert response.status_code == 200
+    assert attempted_models == ["provider/garbled", "provider/working"]
+    assert response.json()["choices"][0]["message"]["content"] == "پاسخ فارسی سالم"
 
 
 def test_combo_returns_json_error_after_all_models_fail(monkeypatch, tmp_path):

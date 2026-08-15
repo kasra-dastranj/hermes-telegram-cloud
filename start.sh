@@ -124,6 +124,28 @@ RULES
     chown hermes:hermes "$agent_rules"
 fi
 
+# Existing installations already have AGENTS.md, so append reliability rules
+# once using a marker instead of silently leaving them on the old policy.
+reliability_marker="# Hermes verified-evidence policy v1"
+if ! grep -Fq "$reliability_marker" "$agent_rules"; then
+    cat >> "$agent_rules" <<'RULES'
+
+# Hermes verified-evidence policy v1
+
+- Treat short follow-ups, replies, and pronouns as continuations of the active
+  request. Read the immediately preceding user and assistant messages before
+  asking the user to repeat details.
+- Never invent a current listing, address, price, availability, search result,
+  citation, or URL. Report a listing as real only when its facts and source URL
+  were directly observed in tool output during the current task.
+- If a live site blocks access or evidence cannot be verified, say exactly
+  that and offer a concrete alternative; do not fill gaps with plausible data.
+- Do not create or modify a reusable skill merely because one research turn
+  succeeded. Skills may be changed only when the user explicitly asks for it.
+RULES
+    chown hermes:hermes "$agent_rules"
+fi
+
 if [ -d /opt/9router-seed/runtime ] && [ ! -d "$DATA_DIR/runtime" ]; then
     echo "[startup] Seeding 9Router runtime dependencies..."
     cp -a /opt/9router-seed/. "$DATA_DIR/"
@@ -147,6 +169,11 @@ agent:
   verbose: false
   reasoning_effort: medium
   image_input_mode: text
+skills:
+  # Disable automatic skill creation/review. A bad provider response previously
+  # turned fabricated rental-search data into a persistent reusable skill.
+  # Explicit user-requested skill operations remain available.
+  creation_nudge_interval: 0
 # Do not freeze platform_toolsets here. When this key is absent Hermes uses
 # its official hermes-telegram composite. Optional capabilities still apply
 # their own runtime requirement checks.

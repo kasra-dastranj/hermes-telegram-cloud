@@ -68,13 +68,13 @@ DIRECT_PROVIDERS = {
 }
 
 
-def _compact_message(message: Any) -> Any:
+def _compact_message(message: Any, tool_content_limit: int = 4000) -> Any:
     """Bound giant tool/terminal output while retaining its useful edges."""
     if not isinstance(message, dict):
         return message
     compacted = dict(message)
     content = compacted.get("content")
-    limit = 4000 if compacted.get("role") == "tool" else 10000
+    limit = tool_content_limit if compacted.get("role") == "tool" else 10000
     if isinstance(content, str) and len(content) > limit:
         edge = max(1, (limit - 120) // 2)
         compacted["content"] = (
@@ -85,16 +85,72 @@ def _compact_message(message: Any) -> Any:
     return compacted
 
 
-def bounded_messages(messages: list[Any], max_chars: int) -> list[Any]:
+def _message_cost(messages: list[Any]) -> int:
+    return len(json.dumps(messages, ensure_ascii=False, default=str))
+
+
+def _conversation_turns(messages: list[Any]) -> list[list[Any]]:
+    """Split history into user-led turns so trimming never starts mid-turn."""
+    turns: list[list[Any]] = []
+    for message in messages:
+        if isinstance(message, dict) and message.get("role") == "user":
+            turns.append([message])
+        elif turns:
+            turns[-1].append(message)
+    return turns
+
+
+def _fit_current_turn(current_turn: list[Any], max_chars: int) -> list[Any]:
+    """Retain a coherent recent suffix of an oversized active tool turn."""
+    if not current_turn or _message_cost(current_turn) <= max_chars:
+        return current_turn
+
+    user = current_turn[0]
+    user_cost = _message_cost([user])
+    if user_cost >= max_chars and isinstance(user, dict):
+        user = dict(user)
+        content = user.get("content")
+        if isinstance(content, str):
+            keep = max(256, max_chars - 512)
+            user["content"] = content[-keep:]
+
+    # Every assistant message starts a protocol segment and owns any tool
+    # results that follow it. Selecting complete recent segments avoids
+    # dangling tool messages that OpenAI-compatible providers reject.
+    segments: list[list[Any]] = []
+    for message in current_turn[1:]:
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            segments.append([message])
+        elif segments:
+            segments[-1].append(message)
+
+    selected: list[list[Any]] = []
+    used = _message_cost([user])
+    for segment in reversed(segments):
+        cost = _message_cost(segment)
+        if used + cost > max_chars:
+            continue
+        selected.append(segment)
+        used += cost
+    selected.reverse()
+    return [user, *(message for segment in selected for message in segment)]
+
+
+def bounded_messages(
+    messages: list[Any], max_chars: int, tool_content_limit: int = 4000
+) -> list[Any]:
     """Keep system instructions and the newest coherent user turn.
 
     A tool continuation is only meaningful when the provider receives the user
     request, the assistant tool call, and the matching tool result together.
-    Keep that latest turn atomically even when the (always-retained) system
-    prompt already consumes the nominal history budget, then use any remaining
-    room for older context.
+    The budget applies to conversation history, not the always-retained system
+    prompt. Count complete user-led turns so a short follow-up such as "do it"
+    keeps the immediately preceding request instead of becoming context-free.
     """
-    compacted = [_compact_message(message) for message in messages]
+    compacted = [
+        _compact_message(message, tool_content_limit=tool_content_limit)
+        for message in messages
+    ]
     system = [
         message
         for message in compacted
@@ -117,21 +173,17 @@ def bounded_messages(messages: list[Any], max_chars: int) -> list[Any]:
         current_turn = conversation[latest_user_index:]
         older = conversation[:latest_user_index]
 
-    used = len(json.dumps(system + current_turn, ensure_ascii=False, default=str))
-    selected: list[Any] = []
-    for message in reversed(older):
-        cost = len(json.dumps(message, ensure_ascii=False, default=str))
+    current_turn = _fit_current_turn(current_turn, max_chars)
+    used = _message_cost(current_turn)
+    selected_turns: list[list[Any]] = []
+    for turn in reversed(_conversation_turns(older)):
+        cost = _message_cost(turn)
         if used + cost > max_chars:
             break
-        selected.append(message)
+        selected_turns.append(turn)
         used += cost
-    selected.reverse()
-    while (
-        selected
-        and isinstance(selected[0], dict)
-        and selected[0].get("role") == "tool"
-    ):
-        selected.pop(0)
+    selected_turns.reverse()
+    selected = [message for turn in selected_turns for message in turn]
     return system + selected + current_turn
 
 
@@ -291,7 +343,14 @@ def request_for_model(
     messages = request_payload.get("messages")
     if isinstance(messages, list):
         budget = history_budget_for_model(model)
-        sanitized_messages = bounded_messages(messages, budget)
+        # Groq's free tier has a tight TPM ceiling. Browser and terminal
+        # results can otherwise dominate the prompt even after old turns are
+        # removed, so keep compact evidence snippets while preserving each
+        # assistant-tool protocol segment.
+        tool_content_limit = 1200 if model.startswith("groq/") else 4000
+        sanitized_messages = bounded_messages(
+            messages, budget, tool_content_limit=tool_content_limit
+        )
     else:
         sanitized_messages = None
 
@@ -350,6 +409,63 @@ def choice_has_output(choice: dict[str, Any]) -> bool:
     if isinstance(message.get("tool_calls"), list) and message["tool_calls"]:
         return True
     return any(message.get(key) for key in ("function_call", "refusal"))
+
+
+def _text_content(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return " ".join(
+            str(part.get("text", ""))
+            for part in value
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return ""
+
+
+def response_quality_error(
+    payload: dict[str, Any], request_payload: dict[str, Any]
+) -> str | None:
+    """Detect obviously corrupted mixed-script prose before accepting fallback."""
+    messages = request_payload.get("messages")
+    if not isinstance(messages, list):
+        return None
+    latest_user = next(
+        (
+            _text_content(message.get("content"))
+            for message in reversed(messages)
+            if isinstance(message, dict) and message.get("role") == "user"
+        ),
+        "",
+    )
+    # Apply this guard only to Persian/Arabic-script conversations. Latin text
+    # and source URLs remain valid in a Persian answer.
+    if len(re.findall(r"[\u0600-\u06ff]", latest_user)) < 2:
+        return None
+
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
+        return None
+    response_text = " ".join(
+        _text_content(choice.get("message", {}).get("content"))
+        for choice in choices
+        if isinstance(choice, dict) and isinstance(choice.get("message"), dict)
+    )
+    if not response_text:
+        return None
+
+    # Greek, Hebrew, Cyrillic, CJK and Hangul appearing in quantity inside a
+    # Persian reply is a reliable signature of the mojibake/random-language
+    # failures observed from aggregator fallbacks.
+    suspicious = re.findall(
+        r"[\u0370-\u052f\u0590-\u05ff\u3040-\u30ff\u3400-\u4dbf"
+        r"\u4e00-\u9fff\uac00-\ud7af]",
+        response_text,
+    )
+    letters = sum(character.isalpha() for character in response_text)
+    if len(suspicious) >= 6 and len(suspicious) / max(letters, 1) >= 0.05:
+        return "garbled mixed-script response"
+    return None
 
 
 def response_to_sse(payload: dict[str, Any]) -> bytes:
@@ -628,6 +744,11 @@ class Handler(BaseHTTPRequestHandler):
             if 200 <= status < 300:
                 try:
                     completed = json.loads(response_body)
+                    quality_error = response_quality_error(
+                        completed, request_payload
+                    )
+                    if quality_error:
+                        raise ValueError(quality_error)
                     # Validate buffered provider output for both transports.
                     stream_body = response_to_sse(completed)
                 except (TypeError, ValueError, KeyError, json.JSONDecodeError) as error:

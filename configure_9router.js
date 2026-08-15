@@ -42,7 +42,10 @@ const secretProviders = [
     envName: "OPENROUTER_API_KEY",
     connectionId: "hermes-managed-openrouter",
     connectionName: "Hermes OpenRouter Secret",
-    models: ["openrouter/free"],
+    models: [
+      "dots-studio/dots-3-note-preview:free",
+      "openrouter/free",
+    ],
   },
 ];
 
@@ -52,7 +55,10 @@ const preferredModelOrder = [
   "gorouter/claude-opus-5",
   "groq/openai/gpt-oss-120b",
   "groq/openai/gpt-oss-20b",
-  "groq/qwen/qwen3.6-27b",
+  // A fixed, tool-capable model is safer than OpenRouter's random free router.
+  // qwen3.6-27b remains registered for manual use but is omitted because Groq
+  // currently rejects it with HTTP 400 on this account.
+  "openrouter/dots-studio/dots-3-note-preview:free",
   "openrouter/openrouter/free",
 ];
 
